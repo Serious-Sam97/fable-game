@@ -48,7 +48,8 @@ e conteúdo em arquivos de definição.
       multiplicador rastreados server-side; casts inválidos são descartados)
 - [ ] **Hospedagem caseira:** no ROG Strix G16 (CachyOS) via **Tailscale** — amigos entram
       pela tailnet sem abrir porta; depois `tailscale funnel` ou VPS para público
-- [ ] Persistência: **SQLite** (contas, personagens, estado do mundo) — Postgres só se crescer
+- [x] Persistência: **SQLite** (personagens por nome, WAL, blob de save ≤8KB);
+      falta: contas com senha e estado do mundo (baús/quests globais)
 
 ### 1b. Protocolo e netcode
 - [ ] Snapshots com **delta compression** + msgpack (nada de JSON gigante por tick)
@@ -58,11 +59,11 @@ e conteúdo em arquivos de definição.
 - [ ] Reconexão sem perder estado; heartbeat/timeout
 
 ### 1c. Jogabilidade multiplayer mínima
-- [ ] Login simples (nome + código de convite), escolha de personagem
+- [x] Login simples por nome na tela de título (código de convite/senha pendente)
 - [x] Ver outros heróis andando/lutando com nameplates (+ magias dos outros visíveis
       via eventos bolt/boom/shock)
-- [ ] **Party system** — XP compartilhado por proximidade ✅ (50% num raio de 30 m);
-      falta: convite formal e crédito de missão em grupo
+- [ ] **Party system** — XP compartilhado ✅ e crédito de missão em grupo ✅
+      (proximidade de 30 m); falta: convite formal e UI de grupo
 - [x] **Chat** de área com mensagens de sistema (entrou/saiu do mundo)
 - [x] Regras de loot: orbes de XP/ouro são de quem matou; XP parcial para aliados perto
 - [x] Mundo persistente: dia/noite e respawns continuam com servidor vazio
