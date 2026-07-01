@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fable — Colinas de Pedravento</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  body { font-family: 'IM Fell English', Georgia, serif; user-select: none; }
+  canvas#game { display: block; }
+  .fell { font-family: 'IM Fell English SC', Georgia, serif; }
+
+  .panel {
+    background: linear-gradient(180deg, rgba(30,24,13,.93), rgba(15,12,6,.93));
+    border: 2px solid #8a6d2f;
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px #000, 0 4px 16px rgba(0,0,0,.65), inset 0 0 14px rgba(0,0,0,.5);
+    color: #e8d5a0;
+  }
+
+  #ui { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(10,5,0,.45) 100%); }
+  #slowfx { position: fixed; inset: 0; pointer-events: none; z-index: 6; opacity: 0; transition: opacity .4s;
+    background: radial-gradient(ellipse at center, rgba(80,140,255,.06) 40%, rgba(40,80,200,.22) 100%); }
+
+  /* ============ title screen ============ */
+  #titleScreen {
+    position: fixed; inset: 0; z-index: 100; pointer-events: auto;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 30%, rgba(20,16,8,.55), rgba(5,4,2,.92) 90%);
+    transition: opacity 1.2s;
+  }
+  #titleScreen h1 {
+    font-family: 'IM Fell English SC', serif; font-size: 110px; letter-spacing: 14px;
+    color: #e9c96a;
+    text-shadow: 0 0 30px rgba(255,200,80,.55), 0 4px 2px #000, 0 0 90px rgba(255,170,40,.35);
+    margin-bottom: 2px;
+  }
+  #titleScreen .sub {
+    font-style: italic; font-size: 20px; color: #cbb582; letter-spacing: 3px;
+    text-shadow: 1px 1px 2px #000; margin-bottom: 46px;
+  }
+  #titleScreen button {
+    font-family: 'IM Fell English SC', serif; font-size: 22px; letter-spacing: 2px;
+    background: none; border: none; color: #d8c088; cursor: pointer; padding: 8px 30px;
+    text-shadow: 1px 1px 2px #000; transition: all .2s;
+  }
+  #titleScreen button:hover:not(:disabled) { color: #ffe9a8; text-shadow: 0 0 14px rgba(255,210,90,.8), 1px 1px 2px #000; transform: scale(1.06); }
+  #titleScreen button:disabled { color: #55503f; cursor: default; }
+  #titleScreen .hint { position: absolute; bottom: 28px; font-size: 13px; color: #8a7a55; font-style: italic; }
+
+  /* ============ unit frames ============ */
+  .unitframe { position: absolute; top: 14px; display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px; min-width: 240px; }
+  #playerFrame { left: 14px; }
+  #targetFrame { left: 285px; display: none; }
+  .portrait {
+    width: 54px; height: 54px; border-radius: 50%;
+    border: 2px solid #c8a24b; background: radial-gradient(circle at 35% 30%, #3b5b8a, #17233a);
+    display: flex; align-items: center; justify-content: center; font-size: 27px; flex-shrink: 0; position: relative;
+  }
+  .lvlBadge {
+    position: absolute; bottom: -6px; right: -6px;
+    background: radial-gradient(#3a2c10, #1c1508); border: 1px solid #c8a24b; border-radius: 50%;
+    width: 22px; height: 22px; font-size: 12px; font-weight: bold; color: #ffd24a;
+    display: flex; align-items: center; justify-content: center; font-family: Arial, sans-serif;
+  }
+  .uf-bars { flex: 1; }
+  .uf-name { font-size: 15px; color: #ffd24a; text-shadow: 1px 1px 0 #000; letter-spacing: .5px; }
+  .uf-title { font-size: 11px; color: #a89468; font-style: italic; margin: -2px 0 3px; }
+  .bar { position: relative; height: 13px; background: #1a1208; border: 1px solid #000; border-radius: 3px; overflow: hidden; margin-bottom: 3px; }
+  .bar .fill { position: absolute; inset: 0; transform-origin: left; transition: transform .15s linear; }
+  .bar.hp .fill { background: linear-gradient(180deg, #5fd65f, #1e7a1e); }
+  .bar.mp .fill { background: linear-gradient(180deg, #5a8fe8, #234a9c); }
+  .bar .txt { position: absolute; inset: 0; font-size: 10px; text-align: center; line-height: 13px; color: #fff; text-shadow: 1px 1px 1px #000; font-family: Arial, sans-serif; }
+  #targetFrame .portrait { background: radial-gradient(circle at 35% 30%, #8a3b3b, #3a1717); }
+
+  /* ============ combat multiplier ============ */
+  #mult {
+    position: absolute; top: 90px; left: 50%; transform: translateX(-50%);
+    font-family: 'IM Fell English SC', serif; font-size: 44px; color: #ffd24a;
+    text-shadow: 0 0 18px rgba(255,190,60,.7), 2px 2px 2px #000; display: none;
+  }
+  #mult.pop { animation: multpop .18s; }
+  @keyframes multpop { 50% { transform: translateX(-50%) scale(1.35); } }
+
+  /* ============ action bar ============ */
+  #actionbarWrap { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); }
+  #actionbar { display: flex; gap: 6px; padding: 7px; pointer-events: auto; align-items: center; }
+  .slot {
+    position: relative; width: 52px; height: 52px;
+    border: 2px solid #6e5726; border-radius: 5px;
+    background: radial-gradient(circle at 40% 30%, #2c2314, #12100a);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; cursor: pointer; overflow: hidden;
+  }
+  .slot:hover { border-color: #ffd24a; }
+  .slot .key { position: absolute; top: 1px; left: 4px; font-size: 11px; font-weight: bold; color: #fff; text-shadow: 1px 1px 1px #000; font-family: Arial, sans-serif; z-index: 3; }
+  .slot .cd { position: absolute; inset: 0; background: rgba(0,0,0,.74); z-index: 2; display: none; align-items: center; justify-content: center; color: #ffd24a; font-size: 16px; font-weight: bold; font-family: Arial, sans-serif; }
+  .slot .cost { position: absolute; bottom: 1px; right: 4px; font-size: 9px; color: #7fb0ff; font-family: Arial, sans-serif; text-shadow: 1px 1px 0 #000; z-index: 3; }
+  .slot .cnt { position: absolute; bottom: 1px; right: 3px; font-size: 11px; font-weight: bold; color: #ffd24a; font-family: Arial, sans-serif; text-shadow: 1px 1px 0 #000; z-index: 3; }
+  .slot.flash { border-color: #ffd24a; box-shadow: 0 0 12px #ffd24a; }
+  .abgap { width: 10px; }
+
+  /* ============ xp + gold ============ */
+  #xpbar { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); width: 500px; height: 8px;
+    background: #12100a; border: 1px solid #6e5726; border-radius: 3px; overflow: hidden; }
+  #xpfill { height: 100%; width: 0%; background: linear-gradient(180deg, #b06ae8, #6b2e9c); transition: width .3s; }
+  #goldDisplay { position: absolute; bottom: 32px; right: 16px; padding: 5px 14px; font-size: 16px; color: #ffd24a; text-shadow: 1px 1px 1px #000; }
+
+  /* ============ minimap + clock ============ */
+  #mapWrap { position: absolute; top: 14px; right: 14px; text-align: center; }
+  #minimap { width: 170px; height: 170px; border-radius: 50%; border: 3px solid #8a6d2f; box-shadow: 0 0 0 1px #000, 0 4px 12px rgba(0,0,0,.6); background: #1a2410; }
+  #clock { margin-top: 4px; font-size: 13px; color: #e8d5a0; text-shadow: 1px 1px 1px #000; }
+
+  /* ============ quest tracker ============ */
+  #questTracker { position: absolute; top: 218px; right: 14px; width: 235px; padding: 10px 12px; display: none; }
+  #questTracker h3 { font-family: 'IM Fell English SC', serif; font-size: 15px; color: #ffd24a; text-shadow: 1px 1px 0 #000; margin-bottom: 5px; }
+  #questText { font-size: 13px; color: #d8c78f; line-height: 1.5; }
+  #questText .done { color: #6fdc6f; }
+  #questText b { color: #ffd24a; }
+
+  /* ============ center message ============ */
+  #centerMsg {
+    position: absolute; top: 18%; left: 50%; transform: translateX(-50%);
+    font-family: 'IM Fell English SC', serif; font-size: 34px; color: #ffd24a;
+    text-shadow: 2px 2px 3px #000, 0 0 22px rgba(255,180,40,.5);
+    opacity: 0; transition: opacity .5s; white-space: nowrap; text-align: center;
+  }
+  #subMsg { font-family: 'IM Fell English', serif; font-size: 16px; color: #e8d5a0; margin-top: 6px; font-style: italic; }
+
+  /* ============ toasts ============ */
+  #toasts { position: absolute; bottom: 120px; right: 16px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  .toast { padding: 8px 16px; font-size: 14px; color: #ffe9a8; animation: toastin .4s; }
+  @keyframes toastin { from { transform: translateX(60px); opacity: 0; } }
+
+  /* ============ dialog ============ */
+  #dialog { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-56%); width: 400px; padding: 18px 20px; display: none; pointer-events: auto; }
+  #dialog h2 { font-family: 'IM Fell English SC', serif; font-size: 20px; color: #ffd24a; text-shadow: 1px 1px 0 #000; margin-bottom: 8px; }
+  #dialog p { font-size: 14px; line-height: 1.55; margin-bottom: 12px; color: #ddc98e; }
+  #dReward { font-size: 13px; color: #b06ae8; margin-bottom: 12px; }
+  #dialog button {
+    font-family: 'IM Fell English', serif; font-size: 14px; padding: 6px 16px; cursor: pointer;
+    background: linear-gradient(180deg, #7a2d0e, #4a1a06); color: #ffd9a0;
+    border: 1px solid #c8a24b; border-radius: 4px; margin: 0 6px 6px 0;
+  }
+  #dialog button:hover { background: linear-gradient(180deg, #9c3a12, #5c2108); }
+  #dialog button.good { background: linear-gradient(180deg, #2a6a2a, #14400f); }
+  #dialog button.good:hover { background: linear-gradient(180deg, #388a38, #1c5214); }
+  #dialog button.evil { background: linear-gradient(180deg, #6a1a1a, #400c0c); }
+  #dialog button.evil:hover { background: linear-gradient(180deg, #8a2424, #521010); }
+
+  /* ============ character panel ============ */
+  #charPanel { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-52%); width: 380px; padding: 18px 22px; display: none; pointer-events: auto; }
+  #charPanel h2 { font-family: 'IM Fell English SC', serif; font-size: 22px; color: #ffd24a; text-shadow: 1px 1px 0 #000; margin-bottom: 2px; }
+  #charPanel .ctitle { font-style: italic; color: #a89468; font-size: 13px; margin-bottom: 12px; }
+  #charPanel .row { display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; border-bottom: 1px solid rgba(138,109,47,.25); }
+  #charPanel .row span:last-child { color: #ffe9a8; }
+  #moralWrap { margin: 14px 0 4px; }
+  #moralWrap .lbl { display: flex; justify-content: space-between; font-size: 12px; color: #a89468; margin-bottom: 3px; }
+  #moralBar { position: relative; height: 12px; border-radius: 6px; border: 1px solid #000;
+    background: linear-gradient(90deg, #8a1c1c, #3a2c14 45%, #3a2c14 55%, #e9c96a); }
+  #moralMarker { position: absolute; top: -4px; width: 4px; height: 18px; background: #fff; border: 1px solid #000; border-radius: 2px; left: 50%; }
+  #charPanel .closeHint { text-align: center; font-size: 11px; color: #8a7a55; margin-top: 12px; font-style: italic; }
+
+  /* ============ interact prompt ============ */
+  #interact {
+    position: absolute; bottom: 110px; left: 50%; transform: translateX(-50%);
+    padding: 5px 16px; font-size: 14px; color: #ffe9a8; display: none;
+  }
+  #interact b { color: #ffd24a; border: 1px solid #c8a24b; border-radius: 4px; padding: 0 7px; margin-right: 6px; font-family: Arial, sans-serif; font-size: 12px; }
+
+  /* ============ nameplates & damage text ============ */
+  .plate { position: absolute; transform: translate(-50%,-100%); text-align: center; pointer-events: none; white-space: nowrap; }
+  .plate .pname { font-size: 12px; font-weight: bold; text-shadow: 1px 1px 1px #000, 0 0 4px #000; font-family: Arial, sans-serif; }
+  .plate .phpbar { width: 84px; height: 6px; background: #200; border: 1px solid #000; margin: 2px auto 0; border-radius: 2px; overflow: hidden; }
+  .plate .phpfill { height: 100%; background: linear-gradient(180deg, #e84a4a, #8a1c1c); transform-origin: left; }
+  .dmg { position: absolute; transform: translate(-50%,-50%); font-weight: bold; font-family: Arial, sans-serif;
+    text-shadow: 1px 1px 1px #000, 0 0 4px #000; pointer-events: none; font-size: 17px; }
+
+  #deathOverlay { position: absolute; inset: 0; background: rgba(50,0,0,.5); display: none;
+    align-items: center; justify-content: center; flex-direction: column;
+    color: #ff8a6a; font-size: 46px; font-family: 'IM Fell English SC', serif; text-shadow: 2px 2px 4px #000; }
+
+  #help { position: absolute; bottom: 12px; left: 14px; padding: 8px 12px; font-size: 11px; line-height: 1.7; color: #bfa96e; font-family: Arial, sans-serif; }
+  #help b { color: #ffd24a; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="vignette"></div>
+<div id="slowfx"></div>
+
+<div id="titleScreen">
+  <h1>FABLE</h1>
+  <div class="sub">~ As Colinas de Pedravento ~</div>
+  <button id="btnContinue" disabled>Continuar</button>
+  <button id="btnNew">Novo Jogo</button>
+  <div class="hint">Para cada escolha, uma consequência…</div>
+</div>
+
+<div id="ui">
+  <div id="playerFrame" class="unitframe panel">
+    <div class="portrait">⚔️<div class="lvlBadge" id="plvl">1</div></div>
+    <div class="uf-bars">
+      <div class="uf-name">Galo</div>
+      <div class="uf-title" id="ptitle">Camponês</div>
+      <div class="bar hp"><div class="fill" id="php"></div><div class="txt" id="phpTxt"></div></div>
+      <div class="bar mp"><div class="fill" id="pwill"></div><div class="txt" id="pwillTxt"></div></div>
+    </div>
+  </div>
+
+  <div id="targetFrame" class="unitframe panel">
+    <div class="portrait" id="tportrait">🐗<div class="lvlBadge" id="tlvl">1</div></div>
+    <div class="uf-bars">
+      <div class="uf-name" id="tname">Alvo</div>
+      <div class="bar hp" style="margin-top:6px"><div class="fill" id="thp"></div><div class="txt" id="thpTxt"></div></div>
+    </div>
+  </div>
+
+  <div id="mult">x1</div>
+
+  <div id="mapWrap">
+    <canvas id="minimap" width="170" height="170"></canvas>
+    <div id="clock">☀️ Dia 1 — 08h</div>
+  </div>
+
+  <div id="questTracker" class="panel">
+    <h3>Missões</h3>
+    <div id="questText"></div>
+  </div>
+
+  <div id="actionbarWrap">
+    <div id="actionbar" class="panel">
+      <div class="slot ab" data-i="0"><span class="key">1</span>⚔️<div class="cd"></div></div>
+      <div class="slot ab" data-i="1"><span class="key">2</span>🔥<div class="cd"></div><span class="cost">20</span></div>
+      <div class="slot ab" data-i="2"><span class="key">3</span>⚡<div class="cd"></div><span class="cost">25</span></div>
+      <div class="slot ab" data-i="3"><span class="key">4</span>💨<div class="cd"></div><span class="cost">20</span></div>
+      <div class="slot ab" data-i="4"><span class="key">5</span>⏳<div class="cd"></div><span class="cost">35</span></div>
+      <div class="slot ab" data-i="5"><span class="key">6</span>✚<div class="cd"></div><span class="cost">25</span></div>
+      <div class="abgap"></div>
+      <div class="slot pot" data-p="hp"><span class="key">7</span>🧪<span class="cnt" id="cntHp">2</span></div>
+      <div class="slot pot" data-p="will"><span class="key">8</span>🔮<span class="cnt" id="cntWill">1</span></div>
+    </div>
+  </div>
+  <div id="xpbar"><div id="xpfill"></div></div>
+  <div id="goldDisplay" class="panel">🪙 <span id="goldTxt">0</span></div>
+
+  <div id="centerMsg"><span id="mainMsg"></span><div id="subMsg"></div></div>
+  <div id="toasts"></div>
+
+  <div id="dialog" class="panel">
+    <h2 id="dTitle"></h2>
+    <p id="dText"></p>
+    <div id="dReward"></div>
+    <div id="dButtons"></div>
+  </div>
+
+  <div id="charPanel" class="panel">
+    <h2>Galo</h2>
+    <div class="ctitle" id="cTitle">Camponês</div>
+    <div class="row"><span>Nível</span><span id="cLvl">1</span></div>
+    <div class="row"><span>Experiência</span><span id="cXp">0 / 100</span></div>
+    <div class="row"><span>Ouro</span><span id="cGold">0</span></div>
+    <div class="row"><span>Renome</span><span id="cRenown">0</span></div>
+    <div class="row"><span>Galinhas chutadas</span><span id="cKicks">0</span></div>
+    <div class="row"><span>Inimigos derrotados</span><span id="cKills">0</span></div>
+    <div id="moralWrap">
+      <div class="lbl"><span>😈 Maldade</span><span>Alinhamento</span><span>Bondade 😇</span></div>
+      <div id="moralBar"><div id="moralMarker"></div></div>
+    </div>
+    <div class="closeHint">Pressione C para fechar</div>
+  </div>
+
+  <div id="interact"><b>F</b><span id="interactTxt"></span></div>
+  <div id="deathOverlay"><div>Você desmaiou</div><div style="font-size:16px;color:#ffb0a0;margin-top:10px;font-family:'IM Fell English',serif;font-style:italic">Os heróis nunca morrem de verdade…</div></div>
+
+  <div id="help" class="panel">
+    <b>WASD</b> mover &nbsp; <b>Espaço</b> pular &nbsp; <b>Mouse</b> câmera &nbsp; <b>Scroll</b> zoom &nbsp; <b>Tab</b> alvo &nbsp; <b>1-8</b> habilidades<br>
+    <b>F</b> interagir / chutar galinha &nbsp; <b>C</b> personagem &nbsp; <b>M</b> música &nbsp; <b>Clique</b> selecionar / falar
+  </div>
+
+  <div id="plates"></div>
+  <div id="dmgs"></div>
+</div>
+
+<script type="module" src="./js/game.js"></script>
+</body>
+</html>

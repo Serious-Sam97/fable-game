@@ -1,0 +1,1447 @@
+import * as THREE from 'three';
+import {
+  canvas, scene, camera, composer, SKY, updateSky, skyHour,
+  beep, noiseBurst, startMusic, toggleMusic, clamp, lerp, rnd,
+} from './core.js';
+import {
+  WORLD_R, LAKE, terrainHeight, buildWorld, updateWorld,
+  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST,
+} from './world.js';
+import {
+  makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite,
+} from './models.js';
+
+buildWorld();
+
+const $ = (id) => document.getElementById(id);
+const SAVE_KEY = 'fable_save_v1';
+
+// ============================================================ player state
+const heroModel = makeHero();
+scene.add(heroModel.group);
+
+const player = {
+  pos: new THREE.Vector3(0, 0, 10),
+  vy: 0, onGround: true, dead: false,
+  level: 1, xp: 0,
+  hp: 110, maxHp: 110, will: 60, maxWill: 60,
+  gold: 25, renown: 0, morality: 0,
+  potions: { hp: 2, will: 1 },
+  kicks: 0, kills: 0, luckCharm: false,
+  walkT: 0, swingT: 0, lastCombat: -99,
+  mult: 0, multT: 0, slowT: 0,
+  achKick: false,
+};
+player.pos.y = terrainHeight(player.pos.x, player.pos.z);
+const xpToNext = (lvl) => 90 + lvl * 60;
+const maxHpFor = (lvl) => 110 + (lvl - 1) * 24;
+const maxWillFor = (lvl) => 60 + (lvl - 1) * 12;
+
+const TITLES = [[0, 'Camponês'], [10, 'Andarilho'], [25, 'Aventureiro'], [50, 'Mercenário'], [80, 'Herói'], [130, 'Lenda de Albion']];
+function playerTitle() {
+  let t = TITLES[0][1];
+  for (const [r, name] of TITLES) if (player.renown >= r) t = name;
+  return t;
+}
+
+function updateMoralityVisuals() {
+  heroModel.halo.visible = player.morality >= 40;
+  heroModel.horns.visible = player.morality <= -40;
+}
+
+// ============================================================ quests
+const quests = {
+  q1: { state: 'available', count: 0, goal: 8 },                       // beetles — Guildmaster
+  q2: { state: 'locked', count: 0, goal: 5, leaderResolved: false },   // bandits — Whisper
+  q3: { state: 'locked', count: 0, goal: 1 },                          // balverine — Guildmaster
+};
+
+// ============================================================ NPCs
+const npcs = [];
+function addNpc(name, model, x, z, opts = {}) {
+  const y = terrainHeight(x, z);
+  model.group.position.set(x, y, z);
+  model.group.rotation.y = opts.rot ?? 0;
+  scene.add(model.group);
+  const plate = document.createElement('div');
+  plate.className = 'plate';
+  plate.innerHTML = `<div class="pname" style="color:#ffe07a">${name}</div>`;
+  $('plates').appendChild(plate);
+  const marker = makeTextSprite('!');
+  marker.position.y = 3.1;
+  marker.visible = false;
+  model.group.add(marker);
+  const npc = { name, model, pos: new THREE.Vector3(x, y, z), plate, marker, role: opts.role, wander: opts.wander, home: new THREE.Vector3(x, y, z), wTarget: null, wTimer: rnd(x, z) * 5, sayT: 4 + rnd(z, x) * 8 };
+  npcs.push(npc);
+  return npc;
+}
+
+const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster' });
+const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper' });
+const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor' });
+addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true });
+addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true });
+
+// ============================================================ chickens
+const chickens = [];
+for (let i = 0; i < 6; i++) {
+  const x = -8 + rnd(i, 200) * 18, z = -10 + rnd(i, 201) * 20;
+  const model = makeChicken();
+  const y = terrainHeight(x, z);
+  model.group.position.set(x, y, z);
+  scene.add(model.group);
+  chickens.push({
+    model, pos: new THREE.Vector3(x, y, z), home: new THREE.Vector3(x, y, z),
+    state: 'idle', vel: new THREE.Vector3(), spin: 0, wTimer: rnd(i, 202) * 3, walkT: 0,
+  });
+}
+
+// ============================================================ enemies
+const enemies = [];
+const DEFS = {
+  besouro:  { name: 'Besouro Colossal', lvl: 1, hp: 26, dmg: [2, 4], xp: 20, gold: [1, 3], renown: 0, speed: 3.6, aggro: 9, atkR: 1.5, atkCd: 1.4, icon: '🪲', plateH: 1.0, respawn: 12, maker: () => makeBeetle() },
+  lobo:     { name: 'Lobo Sombrio', lvl: 3, hp: 90, dmg: [6, 10], xp: 50, gold: [0, 2], renown: 1, speed: 5.4, aggro: 13, atkR: 2.2, atkCd: 1.5, icon: '🐺', plateH: 1.7, respawn: 20, maker: () => makeBeast({ color: 0x555a66, scale: 1.1, tail: true }) },
+  bandido:  { name: 'Bandido', lvl: 4, hp: 130, dmg: [9, 14], xp: 70, gold: [8, 16], renown: 1, speed: 4.6, aggro: 14, atkR: 2.3, atkCd: 1.7, icon: '🗡️', plateH: 2.7, respawn: 24, maker: () => makeBandit() },
+  chefe:    { name: 'Rufião, Chefe Bandido', lvl: 6, hp: 240, dmg: [12, 18], xp: 150, gold: [30, 40], renown: 3, speed: 4.8, aggro: 14, atkR: 2.4, atkCd: 1.5, icon: '💀', plateH: 2.8, respawn: 0, maker: () => makeBandit({ leader: true }) },
+  hobbe:    { name: 'Hobbe', lvl: 3, hp: 85, dmg: [7, 11], xp: 55, gold: [4, 9], renown: 1, speed: 4.2, aggro: 12, atkR: 1.9, atkCd: 1.5, icon: '👺', plateH: 2.0, respawn: 22, maker: () => makeHobbe() },
+  balverine:{ name: 'Balverine Ancião', lvl: 9, hp: 620, dmg: [16, 24], xp: 420, gold: [90, 120], renown: 12, speed: 6.4, aggro: 26, atkR: 2.8, atkCd: 1.6, icon: '👹', plateH: 4.4, respawn: 0, maker: () => makeBalverine() },
+};
+
+function spawnEnemy(typeKey, x, z, extra = {}) {
+  const def = DEFS[typeKey];
+  const model = def.maker();
+  scene.add(model.group);
+  const plate = document.createElement('div');
+  plate.className = 'plate';
+  plate.innerHTML = `<div class="pname" style="color:#ff6a6a">${def.name}</div><div class="phpbar"><div class="phpfill"></div></div>`;
+  $('plates').appendChild(plate);
+  const e = {
+    type: typeKey, def, model,
+    home: new THREE.Vector3(x, 0, z),
+    pos: new THREE.Vector3(x, terrainHeight(x, z), z),
+    hp: def.hp, maxHp: def.hp,
+    state: 'idle', wanderTarget: null, wanderTimer: rnd(x, z) * 4,
+    attackTimer: 0, deadTimer: 0, walkT: 0, swingT: 0,
+    knock: new THREE.Vector3(), leapCd: 0, leapT: 0,
+    plate, plateFill: plate.querySelector('.phpfill'), plateName: plate.querySelector('.pname'),
+    ...extra,
+  };
+  e.model.group.position.copy(e.pos);
+  enemies.push(e);
+  return e;
+}
+
+// spawns
+for (let i = 0; i < 10; i++) {
+  const a = (i / 10) * Math.PI * 2;
+  spawnEnemy('besouro', ORCHARD.x + Math.cos(a) * (5 + rnd(i, 210) * 12), ORCHARD.z + Math.sin(a) * (5 + rnd(i, 211) * 12));
+}
+for (let i = 0; i < 5; i++) {
+  const a = (i / 5) * Math.PI * 2;
+  spawnEnemy('lobo', 95 + Math.cos(a) * (6 + rnd(i, 212) * 12), 55 + Math.sin(a) * (6 + rnd(i, 213) * 12));
+}
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2;
+  spawnEnemy('bandido', BANDIT_CAMP.x + Math.cos(a) * (5 + rnd(i, 214) * 10), BANDIT_CAMP.z + Math.sin(a) * (5 + rnd(i, 215) * 10));
+}
+let leader = spawnEnemy('chefe', BANDIT_CAMP.x, BANDIT_CAMP.z + 3, { isLeader: true });
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2;
+  spawnEnemy('hobbe', DARK_FOREST.x + Math.cos(a) * (6 + rnd(i, 216) * 12), DARK_FOREST.z - 15 + Math.sin(a) * (6 + rnd(i, 217) * 10));
+}
+let balverine = null;
+function spawnBalverine() {
+  balverine = spawnEnemy('balverine', DARK_FOREST.x, DARK_FOREST.z + 12);
+  noiseBurst(0.6, 0.1);
+  beep(70, 0.9, 'sawtooth', 0.09, -25);
+  centerMsg('Um uivo ecoa pelas colinas…', 'O Balverine desperta na Floresta Sombria');
+}
+
+// selection ring
+const selRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.9, 1.15, 32),
+  new THREE.MeshBasicMaterial({ color: 0xffd24a, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
+);
+selRing.rotation.x = -Math.PI / 2;
+selRing.visible = false;
+scene.add(selRing);
+let target = null;
+
+// ============================================================ fx / floating text / orbs
+const effects = [];
+function addEffect(mesh, dur, update) {
+  scene.add(mesh);
+  effects.push({ mesh, t: 0, dur, update });
+}
+const dmgTexts = [];
+function floatText(worldPos, text, color = '#fff', size = 17) {
+  const el = document.createElement('div');
+  el.className = 'dmg';
+  el.style.color = color;
+  el.style.fontSize = size + 'px';
+  el.textContent = text;
+  $('dmgs').appendChild(el);
+  dmgTexts.push({ el, pos: worldPos.clone().add(new THREE.Vector3((Math.random() - 0.5), 2.2, (Math.random() - 0.5) * 0.5)), t: 0 });
+}
+function ringEffect(pos, color = 0x7fb0ff, maxR = 6) {
+  const m = new THREE.Mesh(new THREE.RingGeometry(0.4, 0.8, 32),
+    new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.copy(pos).add(new THREE.Vector3(0, 0.15, 0));
+  addEffect(m, 0.5, (fx, k) => { fx.mesh.scale.setScalar(1 + k * maxR); fx.mesh.material.opacity = 0.85 * (1 - k); });
+}
+function explosion(pos, color = 0xff7a1a) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 12),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  m.position.copy(pos);
+  addEffect(m, 0.4, (fx, k) => { fx.mesh.scale.setScalar(1 + k * 4); fx.mesh.material.opacity = 0.9 * (1 - k); });
+}
+function lightningBolt(from, to) {
+  const pts = [];
+  const n = 7;
+  for (let i = 0; i <= n; i++) {
+    const p = from.clone().lerp(to, i / n);
+    if (i > 0 && i < n) {
+      p.x += (Math.random() - 0.5) * 1.2;
+      p.y += (Math.random() - 0.5) * 1.2;
+      p.z += (Math.random() - 0.5) * 1.2;
+    }
+    pts.push(p);
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xbfe0ff, transparent: true, opacity: 1 }));
+  addEffect(line, 0.25, (fx, k) => { fx.mesh.material.opacity = 1 - k; });
+}
+
+// experience orbs & coins (very Fable)
+const orbs = [];
+const orbGeoXp = new THREE.SphereGeometry(0.14, 8, 8);
+const orbMatXp = new THREE.MeshBasicMaterial({ color: 0x9aff4a });
+const coinGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.06, 12);
+const coinMat = new THREE.MeshBasicMaterial({ color: 0xffd24a });
+function dropOrbs(pos, xp, gold) {
+  const n = clamp(Math.round(xp / 14), 2, 6);
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Mesh(orbGeoXp, orbMatXp);
+    m.position.copy(pos).add(new THREE.Vector3(0, 1, 0));
+    scene.add(m);
+    const a = Math.random() * Math.PI * 2;
+    orbs.push({ mesh: m, kind: 'xp', value: xp / n, t: 0, vel: new THREE.Vector3(Math.cos(a) * 3, 4 + Math.random() * 2, Math.sin(a) * 3) });
+  }
+  if (gold > 0) {
+    const m = new THREE.Mesh(coinGeo, coinMat);
+    m.position.copy(pos).add(new THREE.Vector3(0, 1, 0));
+    scene.add(m);
+    orbs.push({ mesh: m, kind: 'gold', value: gold, t: 0, vel: new THREE.Vector3((Math.random() - 0.5) * 2, 4, (Math.random() - 0.5) * 2) });
+  }
+}
+function updateOrbs(dt) {
+  for (let i = orbs.length - 1; i >= 0; i--) {
+    const o = orbs[i];
+    o.t += dt;
+    if (o.kind === 'gold') o.mesh.rotation.y += dt * 6;
+    if (o.t < 0.45) {
+      o.vel.y -= 12 * dt;
+      o.mesh.position.addScaledVector(o.vel, dt);
+      const gy = terrainHeight(o.mesh.position.x, o.mesh.position.z) + 0.2;
+      if (o.mesh.position.y < gy) o.mesh.position.y = gy;
+    } else {
+      const dest = player.pos.clone().add(new THREE.Vector3(0, 1.2, 0));
+      const d = dest.sub(o.mesh.position);
+      const dist = d.length();
+      if (dist < 0.8) {
+        if (o.kind === 'xp') { gainXP(Math.round(o.value)); beep(880 + Math.random() * 300, 0.08, 'sine', 0.03); }
+        else { player.gold += o.value; floatText(player.pos, `+${o.value} 🪙`, '#ffd24a', 15); beep(1250, 0.09, 'sine', 0.04); }
+        scene.remove(o.mesh);
+        orbs.splice(i, 1);
+        continue;
+      }
+      o.mesh.position.addScaledVector(d.normalize(), Math.min(dist, (6 + o.t * 14) * dt));
+    }
+  }
+}
+
+const projectiles = [];
+
+// ============================================================ combat
+let time = 0;
+let shake = 0;
+
+function dmgMult() {
+  return (1 + Math.min(player.mult, 25) * 0.03) * (player.luckCharm ? 1.08 : 1);
+}
+function damageEnemy(e, dmg, { fromPlayer = true } = {}) {
+  if (e.state === 'dead' || e.state === 'surrender') return;
+  if (fromPlayer) {
+    dmg = Math.round(dmg * dmgMult());
+    player.mult = Math.min(99, player.mult + 1);
+    player.multT = 5;
+    const el = $('mult');
+    el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+  }
+  e.hp -= dmg;
+  player.lastCombat = time;
+  floatText(e.pos, dmg, '#ffd24a', 18);
+  for (const m of e.model.mats) m.emissive.setHex(0x661111);
+  setTimeout(() => { for (const m of e.model.mats) m.emissive.setHex(0x000000); }, 120);
+  if (e.state === 'idle' || e.state === 'return') e.state = 'chase';
+  if (e.hp <= 0) killEnemy(e);
+}
+
+function killEnemy(e) {
+  e.state = 'dead';
+  e.hp = 0;
+  e.deadTimer = 0;
+  e.plate.style.display = 'none';
+  if (target === e) setTarget(null);
+  player.kills++;
+  const gold = e.def.gold[0] + Math.round(Math.random() * (e.def.gold[1] - e.def.gold[0]));
+  dropOrbs(e.pos, e.def.xp, gold);
+  if (e.def.renown) gainRenown(e.def.renown);
+  beep(120, 0.3, 'triangle', 0.06, -60);
+
+  // quest credit
+  if (e.type === 'besouro' && quests.q1.state === 'active' && quests.q1.count < quests.q1.goal) {
+    quests.q1.count++;
+    floatText(e.pos, `Besouros: ${quests.q1.count}/${quests.q1.goal}`, '#8fd0ff', 13);
+    if (quests.q1.count >= quests.q1.goal) { quests.q1.state = 'done'; centerMsg('Besouros no Pomar', 'Retorne ao Mestre da Guilda'); }
+    updateQuestUI(); saveGame();
+  }
+  if (e.type === 'bandido' && quests.q2.state === 'active' && quests.q2.count < quests.q2.goal) {
+    quests.q2.count++;
+    floatText(e.pos, `Bandidos: ${quests.q2.count}/${quests.q2.goal}`, '#8fd0ff', 13);
+    if (quests.q2.count >= quests.q2.goal && leader && leader.state !== 'dead') {
+      leader.state = 'surrender';
+      leader.plateName.style.color = '#ffe07a';
+      centerMsg('O chefe dos bandidos se rende!', 'Aproxime-se e decida o destino dele');
+    }
+    checkQ2Done(); updateQuestUI(); saveGame();
+  }
+  if (e.isLeader) {
+    quests.q2.leaderResolved = true;
+    quests.q2.choice = quests.q2.choice || 'killed';
+    checkQ2Done(); updateQuestUI(); saveGame();
+  }
+  if (e.type === 'balverine' && quests.q3.state === 'active') {
+    quests.q3.count = 1;
+    quests.q3.state = 'done';
+    centerMsg('O Balverine foi derrotado!', 'Retorne ao Mestre da Guilda');
+    updateQuestUI(); saveGame();
+  }
+}
+function checkQ2Done() {
+  if (quests.q2.state === 'active' && quests.q2.count >= quests.q2.goal && quests.q2.leaderResolved) {
+    quests.q2.state = 'done';
+    centerMsg('O Acampamento dos Bandidos', 'Retorne a Whisper na vila');
+  }
+}
+
+function damagePlayer(dmg, srcName = '') {
+  if (player.dead) return;
+  player.hp -= dmg;
+  player.mult = 0;
+  player.lastCombat = time;
+  floatText(player.pos, '-' + dmg, '#ff5a5a', 16);
+  shake = Math.min(0.5, shake + dmg * 0.01);
+  beep(200, 0.06, 'square', 0.04);
+  if (player.hp <= 0) { player.hp = 0; playerDie(); }
+}
+
+function gainXP(amt) {
+  player.xp += amt;
+  while (player.xp >= xpToNext(player.level)) {
+    player.xp -= xpToNext(player.level);
+    player.level++;
+    player.maxHp = maxHpFor(player.level);
+    player.maxWill = maxWillFor(player.level);
+    player.hp = player.maxHp; player.will = player.maxWill;
+    centerMsg(`Nível ${player.level}!`, 'Seu poder cresce…');
+    ringEffect(player.pos, 0xffd24a, 5);
+    beep(523, 0.15, 'sine', 0.07); setTimeout(() => beep(659, 0.15, 'sine', 0.07), 150);
+    setTimeout(() => beep(784, 0.3, 'sine', 0.07), 300);
+    saveGame();
+  }
+}
+function gainRenown(amt) {
+  const before = playerTitle();
+  player.renown += amt;
+  const after = playerTitle();
+  if (after !== before) {
+    toast(`🏅 Novo título: ${after}`);
+    beep(660, 0.2, 'sine', 0.06); setTimeout(() => beep(880, 0.3, 'sine', 0.06), 200);
+  }
+}
+function changeMorality(amt) {
+  player.morality = clamp(player.morality + amt, -100, 100);
+  if (amt > 0) floatText(player.pos, `+${amt} Bondade 😇`, '#ffe9a8', 14);
+  else floatText(player.pos, `${amt} Maldade 😈`, '#ff8a8a', 14);
+  updateMoralityVisuals();
+}
+
+// ============================================================ abilities
+const abilities = [
+  { name: 'Golpe', range: 3.8, cost: 0, cd: 0, needTarget: true,
+    use(t) {
+      player.swingT = 0.35;
+      damageEnemy(t, Math.round(12 + player.level * 3 + Math.random() * 8));
+      beep(160, 0.08, 'square', 0.06);
+    } },
+  { name: 'Bola de Fogo', range: 30, cost: 20, cd: 3.5, needTarget: true,
+    use(t) {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 10), new THREE.MeshBasicMaterial({ color: 0xff8a2a }));
+      m.position.copy(player.pos).add(new THREE.Vector3(0, 1.8, 0));
+      scene.add(m);
+      projectiles.push({ mesh: m, target: t, dmg: Math.round(20 + player.level * 4 + Math.random() * 10), speed: 26 });
+      beep(520, 0.18, 'sawtooth', 0.05, -260);
+    } },
+  { name: 'Relâmpago', range: 28, cost: 25, cd: 6, needTarget: true,
+    use(t) {
+      const src = player.pos.clone().add(new THREE.Vector3(0, 2, 0));
+      const hitPos = t.pos.clone().add(new THREE.Vector3(0, 1.2, 0));
+      lightningBolt(src, hitPos);
+      const dmg = Math.round(16 + player.level * 4);
+      damageEnemy(t, dmg + Math.round(Math.random() * 8));
+      // chain to up to 2 nearby enemies
+      let last = t, chained = 0;
+      for (const e of enemies) {
+        if (chained >= 2) break;
+        if (e === t || e.state === 'dead' || e.state === 'surrender') continue;
+        if (e.pos.distanceTo(last.pos) < 9) {
+          lightningBolt(last.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), e.pos.clone().add(new THREE.Vector3(0, 1.2, 0)));
+          damageEnemy(e, Math.round(dmg * 0.6));
+          last = e; chained++;
+        }
+      }
+      beep(1400, 0.2, 'sawtooth', 0.05, -900);
+      noiseBurst(0.15, 0.05);
+    } },
+  { name: 'Empurrão', range: 0, cost: 20, cd: 8, needTarget: false,
+    use() {
+      ringEffect(player.pos, 0xbfe0ff, 9);
+      let hit = 0;
+      for (const e of enemies) {
+        if (e.state === 'dead' || e.state === 'surrender') continue;
+        const d = e.pos.distanceTo(player.pos);
+        if (d < 8) {
+          damageEnemy(e, Math.round(8 + player.level * 2));
+          const dir = e.pos.clone().sub(player.pos).setY(0).normalize();
+          e.knock.addScaledVector(dir, 16);
+          hit++;
+        }
+      }
+      beep(90, 0.35, 'sawtooth', 0.08, -40);
+      shake = 0.25;
+      if (!hit) floatText(player.pos, 'Nenhum inimigo próximo', '#aaa', 13);
+    } },
+  { name: 'Tempo Lento', range: 0, cost: 35, cd: 22, needTarget: false,
+    use() {
+      player.slowT = 6;
+      beep(50, 1.2, 'sine', 0.09, 40);
+      floatText(player.pos, '⏳ O tempo desacelera…', '#9ad0ff', 16);
+    } },
+  { name: 'Cura', range: 0, cost: 25, cd: 8, needTarget: false,
+    use() {
+      const amt = Math.round(30 + player.level * 7);
+      player.hp = Math.min(player.maxHp, player.hp + amt);
+      floatText(player.pos, '+' + amt, '#6fdc6f', 19);
+      ringEffect(player.pos, 0x6fdc6f, 3);
+      beep(700, 0.25, 'sine', 0.06, 200);
+    } },
+];
+const cooldowns = [0, 0, 0, 0, 0, 0];
+let gcd = 0;
+const slotEls = [...document.querySelectorAll('.slot.ab')];
+
+function errorMsg(text) {
+  floatText(player.pos, text, '#ff6a6a', 14);
+  beep(140, 0.1, 'square', 0.04);
+}
+function tryAbility(i) {
+  if (player.dead || !started) return;
+  const ab = abilities[i];
+  if (gcd > 0 || cooldowns[i] > 0) return;
+  if (player.will < ab.cost) { errorMsg('Vontade insuficiente'); return; }
+  if (ab.needTarget) {
+    if (!target || target.state === 'dead' || target.state === 'surrender') { errorMsg('Você não tem um alvo'); return; }
+    const d = Math.hypot(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
+    if (d > ab.range) { errorMsg('Fora de alcance'); return; }
+    heroModel.group.rotation.y = Math.atan2(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
+  }
+  player.will -= ab.cost;
+  player.lastCombat = time;
+  cooldowns[i] = ab.cd;
+  gcd = 1.0;
+  ab.use(target);
+  slotEls[i].classList.add('flash');
+  setTimeout(() => slotEls[i].classList.remove('flash'), 180);
+}
+slotEls.forEach((el) => el.addEventListener('click', () => tryAbility(+el.dataset.i)));
+
+function usePotion(kind) {
+  if (player.dead || !started) return;
+  if (player.potions[kind] <= 0) { errorMsg('Sem poções!'); return; }
+  player.potions[kind]--;
+  if (kind === 'hp') {
+    const amt = Math.round(player.maxHp * 0.6);
+    player.hp = Math.min(player.maxHp, player.hp + amt);
+    floatText(player.pos, '+' + amt, '#6fdc6f', 19);
+  } else {
+    const amt = Math.round(player.maxWill * 0.7);
+    player.will = Math.min(player.maxWill, player.will + amt);
+    floatText(player.pos, '+' + amt + ' vontade', '#7fb0ff', 17);
+  }
+  beep(500, 0.2, 'sine', 0.05, 150);
+}
+document.querySelectorAll('.slot.pot').forEach((el) => el.addEventListener('click', () => usePotion(el.dataset.p)));
+
+// ============================================================ UI helpers
+let msgTimer = null;
+function centerMsg(main, sub = '') {
+  $('mainMsg').textContent = main;
+  $('subMsg').textContent = sub;
+  $('centerMsg').style.opacity = 1;
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => { $('centerMsg').style.opacity = 0; }, 3200);
+}
+function toast(text) {
+  const el = document.createElement('div');
+  el.className = 'toast panel';
+  el.textContent = text;
+  $('toasts').appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity .8s'; el.style.opacity = 0; setTimeout(() => el.remove(), 900); }, 4200);
+}
+
+function setTarget(e) {
+  target = e;
+  const tf = $('targetFrame');
+  if (!e) { tf.style.display = 'none'; selRing.visible = false; return; }
+  tf.style.display = 'flex';
+  $('tname').textContent = e.def.name;
+  $('tlvl').textContent = e.def.lvl;
+  $('tportrait').childNodes[0].textContent = e.def.icon;
+  selRing.visible = true;
+  selRing.scale.setScalar(e.type === 'balverine' ? 1.8 : e.type === 'besouro' ? 0.8 : 1.1);
+}
+
+function updateQuestUI() {
+  const lines = [];
+  if (quests.q1.state === 'active') lines.push(`<b>Besouros no Pomar</b><br>Besouros mortos: <span class="${quests.q1.count >= quests.q1.goal ? 'done' : ''}">${quests.q1.count}/${quests.q1.goal}</span>`);
+  if (quests.q1.state === 'done') lines.push(`<b>Besouros no Pomar</b><br><span class="done">Retorne ao Mestre da Guilda</span>`);
+  if (quests.q2.state === 'active') {
+    let l = `<b>O Acampamento dos Bandidos</b><br>Bandidos: <span class="${quests.q2.count >= quests.q2.goal ? 'done' : ''}">${quests.q2.count}/${quests.q2.goal}</span>`;
+    if (quests.q2.count >= quests.q2.goal && !quests.q2.leaderResolved) l += `<br>Decida o destino do chefe`;
+    lines.push(l);
+  }
+  if (quests.q2.state === 'done') lines.push(`<b>O Acampamento dos Bandidos</b><br><span class="done">Retorne a Whisper</span>`);
+  if (quests.q3.state === 'active') lines.push(`<b>A Fera da Floresta</b><br>Balverine: <span>${quests.q3.count}/1</span>`);
+  if (quests.q3.state === 'done') lines.push(`<b>A Fera da Floresta</b><br><span class="done">Retorne ao Mestre da Guilda</span>`);
+  $('questTracker').style.display = lines.length ? 'block' : 'none';
+  $('questText').innerHTML = lines.join('<hr style="border-color:rgba(138,109,47,.3);margin:6px 0">');
+
+  // quest markers
+  guildmaster.marker.visible = quests.q1.state === 'available' || quests.q1.state === 'done' ||
+    (quests.q2.state === 'completed' && (quests.q3.state === 'available' || quests.q3.state === 'locked')) || quests.q3.state === 'done';
+  guildmaster.marker.material = makeTextSprite(quests.q1.state === 'done' || quests.q3.state === 'done' ? '?' : '!').material;
+  whisper.marker.visible = (quests.q1.state === 'completed' && quests.q2.state !== 'completed' && quests.q2.state !== 'active') || quests.q2.state === 'done';
+  whisper.marker.material = makeTextSprite(quests.q2.state === 'done' ? '?' : '!').material;
+}
+
+// ============================================================ dialogs
+const dialog = $('dialog');
+function showDialog(title, text, reward, buttons) {
+  $('dTitle').textContent = title;
+  $('dText').textContent = text;
+  $('dReward').textContent = reward || '';
+  const bc = $('dButtons');
+  bc.innerHTML = '';
+  for (const b of buttons) {
+    const btn = document.createElement('button');
+    btn.textContent = b.label;
+    if (b.cls) btn.className = b.cls;
+    btn.onclick = () => { dialog.style.display = 'none'; b.cb && b.cb(); };
+    bc.appendChild(btn);
+  }
+  dialog.style.display = 'block';
+}
+const closeBtn = { label: 'Fechar' };
+
+function talkTo(npc) {
+  if (npc.role === 'guildmaster') {
+    if (quests.q1.state === 'available') {
+      showDialog('Besouros no Pomar',
+        'Bem-vindo, jovem herói! Besouros gigantes infestaram o pomar a leste. Uma primeira missão digna da Guilda: elimine 8 deles.',
+        'Recompensa: 120 XP, 60 ouro, +6 renome',
+        [{ label: 'Aceitar missão', cb: () => { quests.q1.state = 'active'; updateQuestUI(); centerMsg('Nova missão', 'Besouros no Pomar'); saveGame(); } }, closeBtn]);
+    } else if (quests.q1.state === 'active') {
+      showDialog('Mestre da Guilda', `Os besouros ainda rastejam pelo pomar… (${quests.q1.count}/${quests.q1.goal})`, '', [closeBtn]);
+    } else if (quests.q1.state === 'done') {
+      showDialog('Besouros no Pomar', 'Esplêndido! O pomar está a salvo. A Guilda reconhece o seu valor.', 'Recompensa: 120 XP, 60 ouro, +6 renome',
+        [{ label: 'Completar missão', cb: () => {
+          quests.q1.state = 'completed';
+          gainXP(120); player.gold += 60; gainRenown(6); changeMorality(5);
+          centerMsg('Missão completa!', '+120 XP, +60 ouro');
+          beep(660, 0.15, 'sine', 0.06); setTimeout(() => beep(990, 0.25, 'sine', 0.06), 160);
+          updateQuestUI(); saveGame();
+        } }]);
+    } else if (quests.q2.state === 'completed' && (quests.q3.state === 'locked' || quests.q3.state === 'available')) {
+      showDialog('A Fera da Floresta',
+        'Há relatos de um Balverine ancião rondando a Floresta Sombria ao sul. Poucos heróis sobrevivem a um balverine… mas você não é como os outros. Cace-o.',
+        'Recompensa: 500 XP, 250 ouro, +25 renome',
+        [{ label: 'Aceitar missão', cb: () => { quests.q3.state = 'active'; spawnBalverine(); updateQuestUI(); saveGame(); } }, closeBtn]);
+    } else if (quests.q3.state === 'active') {
+      showDialog('Mestre da Guilda', 'O Balverine o aguarda na Floresta Sombria, ao sul. Vá à noite, se tiver coragem…', '', [closeBtn]);
+    } else if (quests.q3.state === 'done') {
+      showDialog('A Fera da Floresta', 'Pelos Antigos… você realmente o derrotou! Albion lembrará do seu nome, herói.', 'Recompensa: 500 XP, 250 ouro, +25 renome',
+        [{ label: 'Completar missão', cb: () => {
+          quests.q3.state = 'completed';
+          gainXP(500); player.gold += 250; gainRenown(25); changeMorality(8);
+          centerMsg('Herói de Pedravento!', 'Você completou todas as missões — por enquanto…');
+          updateQuestUI(); saveGame();
+        } }]);
+    } else if (quests.q3.state === 'completed') {
+      showDialog('Mestre da Guilda', 'Descanse, herói. Mas fique atento: Albion sempre precisa de heróis. (Sua vida está baixa? Você tem poções?)', '', [closeBtn]);
+    } else {
+      showDialog('Mestre da Guilda', 'Continue treinando, jovem. Grandes feitos o aguardam.', '', [closeBtn]);
+    }
+  } else if (npc.role === 'whisper') {
+    if (quests.q1.state !== 'completed' && quests.q2.state === 'locked') {
+      showDialog('Whisper', 'Ei, novato! Prove seu valor com o Mestre da Guilda primeiro, depois falamos de trabalho de verdade.', '', [closeBtn]);
+    } else if (quests.q2.state === 'locked' || quests.q2.state === 'available') {
+      showDialog('O Acampamento dos Bandidos',
+        'Bandidos montaram acampamento a noroeste e andam saqueando viajantes. Derrote 5 deles — e cuidado com o chefe, o Rufião. O destino dele… será escolha sua.',
+        'Recompensa: 250 XP, 120 ouro, +10 renome',
+        [{ label: 'Aceitar missão', cb: () => { quests.q2.state = 'active'; updateQuestUI(); centerMsg('Nova missão', 'O Acampamento dos Bandidos'); saveGame(); } }, closeBtn]);
+    } else if (quests.q2.state === 'active') {
+      showDialog('Whisper', `Os bandidos ainda saqueiam a estrada… (${quests.q2.count}/${quests.q2.goal})`, '', [closeBtn]);
+    } else if (quests.q2.state === 'done') {
+      const extra = quests.q2.choice === 'spared' ? 'Você poupou o Rufião? Misericórdia é coisa rara em Albion…' :
+                    'Então o Rufião está morto. Eficaz… e sombrio.';
+      showDialog('O Acampamento dos Bandidos', `A estrada está segura! ${extra}`, 'Recompensa: 250 XP, 120 ouro, +10 renome',
+        [{ label: 'Completar missão', cb: () => {
+          quests.q2.state = 'completed';
+          gainXP(250); player.gold += 120; gainRenown(10);
+          centerMsg('Missão completa!', '+250 XP, +120 ouro');
+          updateQuestUI(); saveGame();
+        } }]);
+    } else {
+      showDialog('Whisper', 'Nada mal para um novato, hein? Até a próxima caçada.', '', [closeBtn]);
+    }
+  } else if (npc.role === 'vendor') {
+    openShop();
+  } else {
+    const good = player.morality >= 40, evil = player.morality <= -40;
+    const lines = good ? ['Que auréola magnífica!', 'Um verdadeiro herói entre nós!', 'Abençoado seja!'] :
+                  evil ? ['P-por favor, não me machuque!', 'Esses chifres… socorro!', 'Fique longe de mim!'] :
+                  ['Bom dia, viajante.', 'Dizem que há bandidos na estrada…', 'As galinhas andam nervosas hoje.'];
+    showDialog(npc.name, lines[Math.floor(Math.random() * lines.length)], '', [closeBtn]);
+  }
+}
+
+function openShop() {
+  const buy = (cost, cb) => () => {
+    if (player.gold < cost) { errorMsg('Ouro insuficiente'); openShop(); return; }
+    player.gold -= cost;
+    cb();
+    beep(1250, 0.09, 'sine', 0.05);
+    openShop();
+  };
+  const buttons = [
+    { label: '🧪 Poção de Vida — 50 🪙', cb: buy(50, () => { player.potions.hp++; toast('Comprou: Poção de Vida'); }) },
+    { label: '🔮 Poção de Vontade — 60 🪙', cb: buy(60, () => { player.potions.will++; toast('Comprou: Poção de Vontade'); }) },
+  ];
+  if (!player.luckCharm) buttons.push({ label: '🍀 Amuleto da Sorte — 300 🪙 (+8% dano)', cb: buy(300, () => { player.luckCharm = true; toast('Comprou: Amuleto da Sorte (+8% dano)'); saveGame(); }) });
+  buttons.push(closeBtn);
+  showDialog('Barnum, o Mercador',
+    `"Uma pechincha fabulosa, amigo! Palavra de Barnum." — Você tem ${player.gold} 🪙`,
+    '', buttons);
+}
+
+function confrontLeader() {
+  showDialog('O Rufião se rende',
+    '"Espere! Eu me rendo! Éramos apenas famintos… Poupe-me e juro que deixamos as colinas para sempre!"',
+    'Uma escolha o define, herói.',
+    [
+      { label: '😇 Poupar', cls: 'good', cb: () => {
+        changeMorality(20);
+        quests.q2.leaderResolved = true; quests.q2.choice = 'spared';
+        toast('Você poupou o Rufião');
+        // leader runs away
+        leader.state = 'flee'; leader.plate.style.display = 'none';
+        checkQ2Done(); updateQuestUI(); saveGame();
+      } },
+      { label: '😈 Executar', cls: 'evil', cb: () => {
+        changeMorality(-20);
+        quests.q2.choice = 'executed';
+        player.gold += 50;
+        toast('+50 🪙 dos bolsos do Rufião');
+        killEnemy(leader);
+        saveGame();
+      } },
+    ]);
+}
+
+// ============================================================ character panel
+function updateCharPanel() {
+  $('cTitle').textContent = playerTitle() + (player.morality <= -40 ? ' Temível' : player.morality >= 40 ? ' Bondoso' : '');
+  $('cLvl').textContent = player.level;
+  $('cXp').textContent = `${Math.floor(player.xp)} / ${xpToNext(player.level)}`;
+  $('cGold').textContent = player.gold;
+  $('cRenown').textContent = player.renown;
+  $('cKicks').textContent = player.kicks;
+  $('cKills').textContent = player.kills;
+  $('moralMarker').style.left = `${50 + player.morality / 2}%`;
+}
+function toggleCharPanel() {
+  const p = $('charPanel');
+  if (p.style.display === 'block') p.style.display = 'none';
+  else { updateCharPanel(); p.style.display = 'block'; }
+}
+
+// ============================================================ interactions
+function nearestInteract() {
+  let best = null;
+  const consider = (dist, max, label, cb) => {
+    if (dist < max && (!best || dist < best.dist)) best = { dist, label, cb };
+  };
+  for (const c of chickens) {
+    if (c.state === 'fly') continue;
+    consider(c.pos.distanceTo(player.pos), 2.6, 'Chutar a galinha 🐔', () => kickChicken(c));
+  }
+  for (const ch of chests) {
+    if (ch.opened) continue;
+    consider(ch.pos.distanceTo(player.pos), 3.2, 'Abrir o baú', () => openChest(ch));
+  }
+  for (const n of npcs) {
+    consider(n.pos.distanceTo(player.pos), 5.5, `Falar com ${n.name}`, () => talkTo(n));
+  }
+  if (leader && leader.state === 'surrender') {
+    consider(leader.pos.distanceTo(player.pos), 5, 'Decidir o destino do Rufião', confrontLeader);
+  }
+  return best;
+}
+
+function kickChicken(c) {
+  const dir = c.pos.clone().sub(player.pos).setY(0).normalize();
+  if (dir.lengthSq() < 0.01) dir.set(Math.sin(heroModel.group.rotation.y), 0, Math.cos(heroModel.group.rotation.y));
+  c.state = 'fly';
+  c.vel.copy(dir.multiplyScalar(10 + Math.random() * 4));
+  c.vel.y = 8 + Math.random() * 3;
+  c.spin = 12 + Math.random() * 8;
+  player.kicks++;
+  player.swingT = 0.3;
+  changeMorality(-1);
+  beep(300, 0.12, 'square', 0.06, 250);
+  setTimeout(() => beep(1500, 0.15, 'sawtooth', 0.05, -600), 80);
+  floatText(c.pos, '🐔!!', '#fff', 18);
+  if (player.kicks >= 10 && !player.achKick) {
+    player.achKick = true;
+    toast('🏅 Título ganho: Chuta-Galinhas');
+    gainRenown(5);
+  }
+  saveGame();
+}
+
+function openChest(ch) {
+  ch.opened = true;
+  beep(180, 0.35, 'sawtooth', 0.04, -70);
+  const parts = [];
+  if (ch.loot.gold) { player.gold += ch.loot.gold; parts.push(`${ch.loot.gold} 🪙`); }
+  if (ch.loot.hpPot) { player.potions.hp += ch.loot.hpPot; parts.push('Poção de Vida'); }
+  if (ch.loot.willPot) { player.potions.will += ch.loot.willPot; parts.push('Poção de Vontade'); }
+  toast(`Baú aberto: ${parts.join(', ')}`);
+  ringEffect(ch.pos, 0xffd24a, 3);
+  beep(1050, 0.12, 'sine', 0.05); setTimeout(() => beep(1350, 0.18, 'sine', 0.05), 120);
+}
+
+// ============================================================ input
+const keys = {};
+let camYaw = 0.6, camPitch = 0.36, camDist = 11;
+
+addEventListener('keydown', (ev) => {
+  if (!started) return;
+  if (ev.code === 'Tab') {
+    ev.preventDefault();
+    let best = null, bd = 45;
+    for (const e of enemies) {
+      if (e.state === 'dead' || e.state === 'surrender') continue;
+      const d = e.pos.distanceTo(player.pos);
+      if (d < bd) { bd = d; best = e; }
+    }
+    if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
+    return;
+  }
+  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; return; }
+  if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
+  if (ev.code === 'KeyC') { toggleCharPanel(); return; }
+  if (ev.code === 'KeyM') { toast(toggleMusic() ? '🎵 Música ligada' : '🔇 Música desligada'); return; }
+  if (ev.code.startsWith('Digit')) {
+    const n = +ev.code.slice(5);
+    if (n >= 1 && n <= 6) tryAbility(n - 1);
+    if (n === 7) usePotion('hp');
+    if (n === 8) usePotion('will');
+    return;
+  }
+  keys[ev.code] = true;
+});
+addEventListener('keyup', (ev) => { keys[ev.code] = false; });
+
+let dragging = false, dragMoved = 0, lastMX = 0, lastMY = 0;
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('mousedown', (e) => {
+  dragging = true; dragMoved = 0; lastMX = e.clientX; lastMY = e.clientY;
+});
+addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
+  dragMoved += Math.abs(dx) + Math.abs(dy);
+  lastMX = e.clientX; lastMY = e.clientY;
+  camYaw -= dx * 0.005;
+  camPitch = clamp(camPitch + dy * 0.005, 0.06, 1.35);
+});
+addEventListener('mouseup', (e) => {
+  if (dragging && dragMoved < 6 && e.button === 0 && e.target === canvas && started) doClick(e);
+  dragging = false;
+});
+canvas.addEventListener('wheel', (e) => {
+  camDist = clamp(camDist + e.deltaY * 0.01, 4, 28);
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+function doClick(e) {
+  const mouse = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(mouse, camera);
+  // NPCs first
+  for (const n of npcs) {
+    if (raycaster.intersectObject(n.model.group, true).length) {
+      if (player.pos.distanceTo(n.pos) < 7) talkTo(n);
+      else errorMsg('Aproxime-se para conversar');
+      return;
+    }
+  }
+  if (leader && leader.state === 'surrender' && raycaster.intersectObject(leader.model.group, true).length) {
+    if (player.pos.distanceTo(leader.pos) < 6) confrontLeader();
+    return;
+  }
+  let best = null, bestD = Infinity;
+  for (const en of enemies) {
+    if (en.state === 'dead' || en.state === 'surrender') continue;
+    const hit = raycaster.intersectObject(en.model.group, true);
+    if (hit.length && hit[0].distance < bestD) { bestD = hit[0].distance; best = en; }
+  }
+  if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
+}
+
+// ============================================================ death
+function playerDie() {
+  player.dead = true;
+  $('deathOverlay').style.display = 'flex';
+  beep(80, 0.8, 'sawtooth', 0.08, -30);
+  setTimeout(() => {
+    player.pos.set(0, terrainHeight(0, 10), 10);
+    player.hp = player.maxHp; player.will = player.maxWill;
+    player.dead = false; player.mult = 0;
+    for (const e of enemies) {
+      if (e.state === 'chase' || e.state === 'attack' || e.state === 'leap') { e.state = 'return'; e.hp = e.maxHp; }
+    }
+    $('deathOverlay').style.display = 'none';
+  }, 3500);
+}
+
+// ============================================================ save / load
+function saveGame() {
+  if (!started) return;
+  const data = {
+    level: player.level, xp: player.xp, gold: player.gold,
+    morality: player.morality, renown: player.renown,
+    potions: player.potions, kicks: player.kicks, kills: player.kills,
+    luckCharm: player.luckCharm, achKick: player.achKick,
+    hp: player.hp, will: player.will,
+    pos: [player.pos.x, player.pos.z],
+    dayT: SKY.dayT, day: SKY.day,
+    q1: { state: quests.q1.state, count: quests.q1.count },
+    q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
+    q3: { state: quests.q3.state, count: quests.q3.count },
+  };
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) { /* full/blocked */ }
+}
+function loadGame() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch (e) { /* corrupt */ }
+  if (!data) return false;
+  player.level = data.level; player.xp = data.xp; player.gold = data.gold;
+  player.morality = data.morality; player.renown = data.renown;
+  player.potions = data.potions; player.kicks = data.kicks; player.kills = data.kills || 0;
+  player.luckCharm = !!data.luckCharm; player.achKick = !!data.achKick;
+  player.maxHp = maxHpFor(player.level); player.maxWill = maxWillFor(player.level);
+  player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
+  player.will = clamp(data.will ?? player.maxWill, 0, player.maxWill);
+  player.pos.set(data.pos[0], 0, data.pos[1]);
+  player.pos.y = terrainHeight(player.pos.x, player.pos.z);
+  SKY.dayT = data.dayT ?? 0.09; SKY.day = data.day ?? 1;
+  Object.assign(quests.q1, data.q1);
+  Object.assign(quests.q2, data.q2);
+  Object.assign(quests.q3, data.q3);
+  if (quests.q2.state === 'completed' || quests.q2.choice) {
+    if (leader) { leader.state = 'dead'; leader.model.group.visible = false; leader.plate.style.display = 'none'; }
+  }
+  if (quests.q3.state === 'active') spawnBalverine();
+  updateMoralityVisuals();
+  updateQuestUI();
+  return true;
+}
+
+// ============================================================ title screen
+let started = false;
+{
+  const hasSave = !!localStorage.getItem(SAVE_KEY);
+  $('btnContinue').disabled = !hasSave;
+  $('btnNew').onclick = () => {
+    localStorage.removeItem(SAVE_KEY);
+    startGame(false);
+  };
+  $('btnContinue').onclick = () => startGame(true);
+}
+function startGame(fromSave) {
+  if (fromSave) loadGame();
+  started = true;
+  startMusic();
+  const ts = $('titleScreen');
+  ts.style.opacity = 0;
+  setTimeout(() => { ts.style.display = 'none'; }, 1200);
+  updateQuestUI();
+  updateMoralityVisuals();
+  centerMsg('Colinas de Pedravento', fromSave ? 'Bem-vindo de volta, herói' : 'Fale com o Mestre da Guilda para começar sua lenda');
+  saveTimer = 15;
+}
+
+// ============================================================ minimap
+const mm = $('minimap').getContext('2d');
+function drawMinimap() {
+  const S = 170, C = S / 2, scale = 0.62;
+  mm.clearRect(0, 0, S, S);
+  mm.save();
+  mm.beginPath(); mm.arc(C, C, C - 2, 0, Math.PI * 2); mm.clip();
+  mm.fillStyle = '#2a3a1c'; mm.fillRect(0, 0, S, S);
+  const px = player.pos.x, pz = player.pos.z;
+  const toMap = (x, z) => [C + (x - px) * scale, C + (z - pz) * scale];
+  // static features
+  for (const f of MAP_FEATURES) {
+    const [x, y] = toMap(f.x, f.z);
+    mm.fillStyle = f.color;
+    mm.beginPath(); mm.arc(x, y, f.r * scale * 1.6, 0, Math.PI * 2); mm.fill();
+  }
+  // chests
+  mm.fillStyle = '#ffd24a';
+  for (const ch of chests) {
+    if (ch.opened) continue;
+    const [x, y] = toMap(ch.pos.x, ch.pos.z);
+    mm.fillRect(x - 2, y - 2, 4, 4);
+  }
+  // enemies
+  for (const e of enemies) {
+    if (e.state === 'dead') continue;
+    const [x, y] = toMap(e.pos.x, e.pos.z);
+    mm.fillStyle = e.state === 'surrender' ? '#ffe07a' : '#e84a4a';
+    mm.beginPath(); mm.arc(x, y, e.type === 'balverine' ? 4 : 2.2, 0, Math.PI * 2); mm.fill();
+  }
+  // npcs
+  mm.fillStyle = '#ffe07a';
+  for (const n of npcs) {
+    const [x, y] = toMap(n.pos.x, n.pos.z);
+    mm.beginPath(); mm.arc(x, y, 2.4, 0, Math.PI * 2); mm.fill();
+  }
+  // chickens
+  mm.fillStyle = '#fff';
+  for (const c of chickens) {
+    const [x, y] = toMap(c.pos.x, c.pos.z);
+    mm.fillRect(x - 1, y - 1, 2, 2);
+  }
+  // player arrow
+  const fy = heroModel.group.rotation.y;
+  mm.save();
+  mm.translate(C, C);
+  mm.rotate(Math.atan2(Math.sin(fy), -Math.cos(fy)));
+  mm.fillStyle = '#fff';
+  mm.beginPath(); mm.moveTo(0, -6); mm.lineTo(4, 5); mm.lineTo(-4, 5); mm.closePath(); mm.fill();
+  mm.restore();
+  mm.restore();
+  // N marker
+  mm.fillStyle = '#ffd24a';
+  mm.font = 'bold 11px Georgia';
+  mm.textAlign = 'center';
+  mm.fillText('N', C, 12);
+}
+
+// ============================================================ hints
+let hintT = 30;
+function guildmasterHints(dt) {
+  hintT -= dt;
+  if (hintT <= 0) {
+    hintT = 50;
+    if (player.hp < player.maxHp * 0.3) toast('Mestre da Guilda: “Sua vida está baixa. Você tem poções?”');
+    else if (SKY.nightF > 0.6 && Math.random() < 0.5) toast('Mestre da Guilda: “A noite é perigosa em Albion…”');
+  }
+}
+
+// ============================================================ enemy AI
+function moveEnemyToward(e, targetPos, speed, dt) {
+  const dx = targetPos.x - e.pos.x, dz = targetPos.z - e.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 0.3) return;
+  e.pos.x += (dx / d) * speed * dt;
+  e.pos.z += (dz / d) * speed * dt;
+  e.model.group.rotation.y = e.def.maker === DEFS.lobo.maker || e.type === 'lobo' || e.type === 'besouro'
+    ? Math.atan2(dx, dz) - Math.PI / 2
+    : Math.atan2(dx, dz);
+  e.walkT += dt * speed * 2.2;
+}
+// beasts face +x, humanoids face +z
+const FACE_X = new Set(['lobo', 'besouro']);
+function faceTarget(e, tx, tz) {
+  const dx = tx - e.pos.x, dz = tz - e.pos.z;
+  e.model.group.rotation.y = FACE_X.has(e.type) ? Math.atan2(dx, dz) - Math.PI / 2 : Math.atan2(dx, dz);
+}
+
+function updateEnemy(e, dt, eDt) {
+  if (e.state === 'dead') {
+    e.deadTimer += dt;
+    e.model.group.rotation.z = Math.min(Math.PI / 2, e.deadTimer * 4);
+    if (e.def.respawn && e.deadTimer > e.def.respawn) {
+      e.state = 'idle'; e.hp = e.maxHp;
+      e.pos.set(e.home.x, terrainHeight(e.home.x, e.home.z), e.home.z);
+      e.model.group.rotation.z = 0;
+      e.plate.style.display = '';
+    }
+    e.model.group.position.copy(e.pos);
+    return;
+  }
+  if (e.state === 'surrender') {
+    e.model.group.rotation.x = 0.5; // kneel-ish
+    faceTarget(e, player.pos.x, player.pos.z);
+    e.model.group.position.copy(e.pos);
+    return;
+  }
+  if (e.state === 'flee') {
+    const away = e.pos.clone().sub(player.pos).setY(0).normalize();
+    e.pos.addScaledVector(away, 7 * dt);
+    e.walkT += dt * 12;
+    e.model.group.rotation.x = 0;
+    faceTarget(e, e.pos.x + away.x, e.pos.z + away.z);
+    if (e.pos.distanceTo(player.pos) > 60) { e.model.group.visible = false; }
+    e.pos.y = terrainHeight(e.pos.x, e.pos.z);
+    e.model.group.position.copy(e.pos);
+    return;
+  }
+
+  // knockback
+  if (e.knock.lengthSq() > 0.01) {
+    e.pos.addScaledVector(e.knock, eDt);
+    e.knock.multiplyScalar(Math.max(0, 1 - 5 * eDt));
+  }
+
+  const dPlayer = Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z);
+  const dHome = Math.hypot(e.home.x - e.pos.x, e.home.z - e.pos.z);
+  const aggroR = e.def.aggro * (SKY.nightF > 0.5 && (e.type === 'lobo' || e.type === 'hobbe' || e.type === 'balverine') ? 1.5 : 1);
+
+  if (e.state === 'leap') {
+    e.leapT += eDt / 0.7;
+    const k = Math.min(1, e.leapT);
+    e.pos.lerpVectors(e.leapFrom, e.leapTo, k);
+    e.pos.y = terrainHeight(e.pos.x, e.pos.z) + Math.sin(k * Math.PI) * 4.5;
+    e.model.group.position.copy(e.pos);
+    if (k >= 1) {
+      e.state = 'chase';
+      shake = 0.4;
+      ringEffect(e.pos, 0x8a4a4a, 5);
+      noiseBurst(0.2, 0.07);
+      if (!player.dead && Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z) < 3.5) {
+        damagePlayer(Math.round(e.def.dmg[0] + Math.random() * (e.def.dmg[1] - e.def.dmg[0])));
+      }
+    }
+    return;
+  }
+
+  if (e.state === 'idle') {
+    if (!player.dead && dPlayer < aggroR) {
+      e.state = 'chase';
+      floatText(e.pos, '!', '#ff6a6a', 20);
+      if (e.type === 'balverine') { noiseBurst(0.5, 0.09); beep(90, 0.7, 'sawtooth', 0.08, -30); }
+    } else {
+      e.wanderTimer -= dt;
+      if (e.wanderTimer <= 0) {
+        e.wanderTimer = 3 + Math.random() * 5;
+        const a = Math.random() * Math.PI * 2, r = Math.random() * 9;
+        e.wanderTarget = new THREE.Vector3(e.home.x + Math.cos(a) * r, 0, e.home.z + Math.sin(a) * r);
+      }
+      if (e.wanderTarget) moveEnemyToward(e, e.wanderTarget, e.def.speed * 0.35, eDt);
+    }
+  } else if (e.state === 'chase' || e.state === 'attack') {
+    if (player.dead || dHome > 55) {
+      e.state = 'return'; e.hp = e.maxHp;
+    } else if (e.type === 'balverine' && dPlayer > 6 && dPlayer < 16 && e.leapCd <= 0) {
+      e.state = 'leap';
+      e.leapT = 0; e.leapCd = 7;
+      e.leapFrom = e.pos.clone();
+      e.leapTo = player.pos.clone();
+      floatText(e.pos, '🐺 SALTO!', '#ff8a5a', 16);
+    } else if (dPlayer > e.def.atkR) {
+      e.state = 'chase';
+      moveEnemyToward(e, player.pos, e.def.speed, eDt);
+    } else {
+      e.state = 'attack';
+      faceTarget(e, player.pos.x, player.pos.z);
+      e.attackTimer -= eDt;
+      if (e.attackTimer <= 0) {
+        e.attackTimer = e.def.atkCd;
+        e.swingT = 0.3;
+        damagePlayer(Math.round(e.def.dmg[0] + Math.random() * (e.def.dmg[1] - e.def.dmg[0])));
+      }
+    }
+  } else if (e.state === 'return') {
+    if (dHome < 1.5) { e.state = 'idle'; e.hp = e.maxHp; }
+    else moveEnemyToward(e, e.home, e.def.speed, eDt);
+  }
+  e.leapCd = Math.max(0, e.leapCd - dt);
+
+  e.pos.y = terrainHeight(e.pos.x, e.pos.z);
+  e.model.group.position.copy(e.pos);
+
+  // leg / arm animation
+  const ls = Math.sin(e.walkT) * 0.6;
+  if (e.model.legs) {
+    for (let i = 0; i < e.model.legs.length; i++) {
+      e.model.legs[i].rotation.x = i % 2 ? ls : -ls;
+    }
+  }
+  if (e.model.armR) {
+    if (e.swingT > 0) { e.swingT -= dt; e.model.armR.rotation.x = -2.2 * (e.swingT / 0.3); }
+    else e.model.armR.rotation.x = ls * 0.5;
+    if (e.model.armL) e.model.armL.rotation.x = -ls * 0.5;
+  }
+}
+
+// ============================================================ chicken AI
+function updateChicken(c, dt) {
+  if (c.state === 'fly') {
+    c.vel.y -= 22 * dt;
+    c.pos.addScaledVector(c.vel, dt);
+    c.model.group.rotation.x += c.spin * dt;
+    const gy = terrainHeight(c.pos.x, c.pos.z);
+    if (c.pos.y <= gy) {
+      c.pos.y = gy;
+      c.state = 'idle';
+      c.model.group.rotation.x = 0;
+      c.vel.set(0, 0, 0);
+      floatText(c.pos, 'có có!', '#fff', 12);
+    }
+  } else {
+    const dP = c.pos.distanceTo(player.pos);
+    if (dP < 2.2) {
+      const away = c.pos.clone().sub(player.pos).setY(0).normalize();
+      c.pos.addScaledVector(away, 3.2 * dt);
+      c.model.group.rotation.y = Math.atan2(away.x, away.z);
+      c.walkT += dt * 14;
+    } else {
+      c.wTimer -= dt;
+      if (c.wTimer <= 0) {
+        c.wTimer = 2 + Math.random() * 4;
+        const a = Math.random() * Math.PI * 2;
+        c.wTarget = c.home.clone().add(new THREE.Vector3(Math.cos(a) * 5, 0, Math.sin(a) * 5));
+      }
+      if (c.wTarget) {
+        const d = c.wTarget.clone().sub(c.pos).setY(0);
+        if (d.length() > 0.4) {
+          d.normalize();
+          c.pos.addScaledVector(d, 1.4 * dt);
+          c.model.group.rotation.y = Math.atan2(d.x, d.z);
+          c.walkT += dt * 8;
+        }
+      }
+    }
+    c.pos.y = terrainHeight(c.pos.x, c.pos.z);
+    const ls = Math.sin(c.walkT) * 0.5;
+    c.model.legs[0].rotation.x = ls; c.model.legs[1].rotation.x = -ls;
+  }
+  c.model.group.position.copy(c.pos);
+}
+
+// ============================================================ NPC ambient
+function updateNpc(n, dt) {
+  if (n.wander) {
+    const evil = player.morality <= -40;
+    const dP = n.pos.distanceTo(player.pos);
+    if (evil && dP < 7) {
+      const away = n.pos.clone().sub(player.pos).setY(0).normalize();
+      n.pos.addScaledVector(away, 3 * dt);
+      n.model.group.rotation.y = Math.atan2(away.x, away.z);
+    } else {
+      n.wTimer -= dt;
+      if (n.wTimer <= 0) {
+        n.wTimer = 4 + Math.random() * 6;
+        const a = Math.random() * Math.PI * 2;
+        n.wTarget = n.home.clone().add(new THREE.Vector3(Math.cos(a) * 7, 0, Math.sin(a) * 7));
+      }
+      if (n.wTarget) {
+        const d = n.wTarget.clone().sub(n.pos).setY(0);
+        if (d.length() > 0.5) {
+          d.normalize();
+          n.pos.addScaledVector(d, 1.5 * dt);
+          n.model.group.rotation.y = Math.atan2(d.x, d.z);
+        }
+      }
+    }
+    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+    n.model.group.position.copy(n.pos);
+    // ambient chatter
+    n.sayT -= dt;
+    if (n.sayT <= 0 && dP < 9) {
+      n.sayT = 14 + Math.random() * 14;
+      const good = player.morality >= 40;
+      const lines = evil ? ['Socorro!', 'É um monstro!'] : good ? ['Um herói!', 'Que auréola!'] : ['Bom dia!', 'Belo dia, não?'];
+      floatText(n.pos, lines[Math.floor(Math.random() * lines.length)], '#ffe07a', 13);
+    } else if (n.sayT <= 0) {
+      n.sayT = 10;
+    }
+  }
+}
+
+// ============================================================ main loop
+const clock = new THREE.Clock();
+const tmpV = new THREE.Vector3();
+let saveTimer = 15;
+
+function animate() {
+  requestAnimationFrame(animate);
+  tick();
+}
+// keep simulating while the tab is hidden (rAF pauses there)
+setInterval(() => { if (document.hidden) tick(); }, 50);
+
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  time += dt;
+  const eDt = dt * (player.slowT > 0 ? 0.35 : 1);
+
+  // ---------- player movement ----------
+  if (started && !player.dead && dialog.style.display !== 'block') {
+    const fw = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+    const st = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+    const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
+    const rx = -fz, rz = fx;
+    let mx = fx * fw + rx * st, mz = fz * fw + rz * st;
+    const ml = Math.hypot(mx, mz);
+    if (ml > 0) {
+      mx /= ml; mz /= ml;
+      const speed = 9;
+      const nx = player.pos.x + mx * speed * dt;
+      const nz = player.pos.z + mz * speed * dt;
+      // block deep water & world edge
+      if (terrainHeight(nx, nz) > LAKE.waterY - 0.35 && Math.hypot(nx, nz) < WORLD_R) {
+        player.pos.x = nx; player.pos.z = nz;
+      }
+      heroModel.group.rotation.y = Math.atan2(mx, mz);
+      player.walkT += dt * 9;
+    } else {
+      player.walkT *= 0.8;
+    }
+    const groundY = terrainHeight(player.pos.x, player.pos.z);
+    if (keys.Space && player.onGround) { player.vy = 8.5; player.onGround = false; }
+    if (!player.onGround) {
+      player.vy -= 24 * dt;
+      player.pos.y += player.vy * dt;
+      if (player.pos.y <= groundY) { player.pos.y = groundY; player.onGround = true; player.vy = 0; }
+    } else {
+      player.pos.y = groundY;
+    }
+  }
+  heroModel.group.position.copy(player.pos);
+
+  // hero animation
+  const swing = Math.sin(player.walkT) * 0.65;
+  heroModel.legL.rotation.x = swing;
+  heroModel.legR.rotation.x = -swing;
+  heroModel.armL.rotation.x = -swing * 0.7;
+  if (player.swingT > 0) {
+    player.swingT -= dt;
+    heroModel.armR.rotation.x = -2.4 * (player.swingT / 0.35);
+  } else {
+    heroModel.armR.rotation.x = swing * 0.7;
+  }
+  heroModel.cape.rotation.x = 0.15 + Math.abs(swing) * 0.35 + Math.sin(time * 2) * 0.05;
+  if (heroModel.halo.visible) heroModel.halo.rotation.z = time * 1.5;
+
+  // ---------- timers / regen ----------
+  if (started && !player.dead) {
+    player.will = Math.min(player.maxWill, player.will + 4 * dt);
+    if (time - player.lastCombat > 5) player.hp = Math.min(player.maxHp, player.hp + 3 * dt);
+  }
+  gcd = Math.max(0, gcd - dt);
+  for (let i = 0; i < cooldowns.length; i++) cooldowns[i] = Math.max(0, cooldowns[i] - dt);
+  if (player.multT > 0) { player.multT -= dt; if (player.multT <= 0) player.mult = 0; }
+  if (player.slowT > 0) player.slowT -= dt;
+  $('slowfx').style.opacity = player.slowT > 0 ? 1 : 0;
+
+  // ---------- world / entities ----------
+  updateSky(started ? dt : dt * 0.3, player.pos);
+  updateWorld(time, dt, player.pos);
+  if (started) {
+    for (const e of enemies) updateEnemy(e, dt, eDt);
+    for (const c of chickens) updateChicken(c, dt);
+    for (const n of npcs) updateNpc(n, dt);
+    guildmasterHints(dt);
+    updateOrbs(dt);
+  }
+
+  // ---------- projectiles ----------
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    const dest = tmpV.copy(p.target.pos).add(new THREE.Vector3(0, 1, 0));
+    const dir = dest.sub(p.mesh.position);
+    const d = dir.length();
+    if (d < 0.6 || p.target.state === 'dead') {
+      explosion(p.mesh.position);
+      if (p.target.state !== 'dead') damageEnemy(p.target, p.dmg);
+      scene.remove(p.mesh);
+      projectiles.splice(i, 1);
+      beep(100, 0.15, 'sawtooth', 0.05);
+    } else {
+      p.mesh.position.addScaledVector(dir.normalize(), Math.min(d, p.speed * dt));
+    }
+  }
+
+  // ---------- effects ----------
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const fx = effects[i];
+    fx.t += dt;
+    const k = fx.t / fx.dur;
+    if (k >= 1) { scene.remove(fx.mesh); effects.splice(i, 1); }
+    else fx.update(fx, k);
+  }
+
+  // ---------- selection ring ----------
+  if (target && target.state !== 'dead' && target.state !== 'surrender') {
+    selRing.position.set(target.pos.x, target.pos.y + 0.08, target.pos.z);
+  } else if (target) {
+    setTarget(null);
+  }
+
+  // ---------- camera ----------
+  let lookPos = player.pos;
+  if (!started) {
+    camYaw += dt * 0.05;
+    camDist = 16;
+    camPitch = 0.3;
+  }
+  const cx = Math.sin(camYaw) * Math.cos(camPitch) * camDist;
+  const cy = Math.sin(camPitch) * camDist;
+  const cz = Math.cos(camYaw) * Math.cos(camPitch) * camDist;
+  camera.position.set(lookPos.x + cx, lookPos.y + 1.6 + cy, lookPos.z + cz);
+  const camGround = terrainHeight(camera.position.x, camera.position.z) + 0.5;
+  if (camera.position.y < camGround) camera.position.y = camGround;
+  if (shake > 0) {
+    shake = Math.max(0, shake - dt * 1.4);
+    camera.position.x += (Math.random() - 0.5) * shake;
+    camera.position.y += (Math.random() - 0.5) * shake;
+  }
+  camera.lookAt(lookPos.x, lookPos.y + 2, lookPos.z);
+
+  // ---------- HUD ----------
+  if (started) {
+    $('php').style.transform = `scaleX(${Math.max(0, player.hp / player.maxHp)})`;
+    $('pwill').style.transform = `scaleX(${player.will / player.maxWill})`;
+    $('phpTxt').textContent = `${Math.ceil(player.hp)} / ${player.maxHp}`;
+    $('pwillTxt').textContent = `${Math.floor(player.will)} / ${player.maxWill}`;
+    $('plvl').textContent = player.level;
+    $('ptitle').textContent = playerTitle();
+    $('xpfill').style.width = `${(player.xp / xpToNext(player.level)) * 100}%`;
+    $('goldTxt').textContent = player.gold;
+    $('cntHp').textContent = player.potions.hp;
+    $('cntWill').textContent = player.potions.will;
+    if (target) {
+      $('thp').style.transform = `scaleX(${Math.max(0, target.hp / target.maxHp)})`;
+      $('thpTxt').textContent = `${Math.max(0, Math.ceil(target.hp))} / ${target.maxHp}`;
+    }
+    for (let i = 0; i < slotEls.length; i++) {
+      const cdEl = slotEls[i].querySelector('.cd');
+      const rem = Math.max(cooldowns[i], gcd);
+      if (rem > 0.05) {
+        cdEl.style.display = 'flex';
+        cdEl.textContent = rem > 1 ? Math.ceil(rem) : '';
+      } else cdEl.style.display = 'none';
+    }
+    const multEl = $('mult');
+    if (player.mult > 1) { multEl.style.display = 'block'; multEl.textContent = 'x' + player.mult; }
+    else multEl.style.display = 'none';
+
+    // clock
+    const h = Math.floor(skyHour());
+    $('clock').textContent = `${SKY.nightF > 0.5 ? '🌙' : '☀️'} Dia ${SKY.day} — ${String(h).padStart(2, '0')}h`;
+
+    // interact prompt
+    const it = nearestInteract();
+    if (it && dialog.style.display !== 'block') {
+      $('interact').style.display = 'block';
+      $('interactTxt').textContent = it.label;
+    } else $('interact').style.display = 'none';
+
+    drawMinimap();
+  }
+
+  // ---------- nameplates ----------
+  for (const e of enemies) {
+    if (e.state === 'dead' || !e.model.group.visible) { e.plate.style.display = 'none'; continue; }
+    tmpV.set(e.pos.x, e.pos.y + e.def.plateH, e.pos.z);
+    const dCam = tmpV.distanceTo(camera.position);
+    tmpV.project(camera);
+    if (tmpV.z > 1 || dCam > 70) { e.plate.style.display = 'none'; continue; }
+    e.plate.style.display = '';
+    e.plate.style.left = `${(tmpV.x * 0.5 + 0.5) * innerWidth}px`;
+    e.plate.style.top = `${(-tmpV.y * 0.5 + 0.5) * innerHeight}px`;
+    e.plateFill.style.transform = `scaleX(${Math.max(0, e.hp / e.maxHp)})`;
+  }
+  for (const n of npcs) {
+    tmpV.set(n.pos.x, n.pos.y + 3.0, n.pos.z);
+    const dCam = tmpV.distanceTo(camera.position);
+    tmpV.project(camera);
+    if (tmpV.z > 1 || dCam > 40) { n.plate.style.display = 'none'; continue; }
+    n.plate.style.display = '';
+    n.plate.style.left = `${(tmpV.x * 0.5 + 0.5) * innerWidth}px`;
+    n.plate.style.top = `${(-tmpV.y * 0.5 + 0.5) * innerHeight}px`;
+  }
+
+  // ---------- floating text ----------
+  for (let i = dmgTexts.length - 1; i >= 0; i--) {
+    const d = dmgTexts[i];
+    d.t += dt;
+    if (d.t > 1.15) { d.el.remove(); dmgTexts.splice(i, 1); continue; }
+    tmpV.copy(d.pos);
+    tmpV.y += d.t * 1.6;
+    tmpV.project(camera);
+    d.el.style.left = `${(tmpV.x * 0.5 + 0.5) * innerWidth}px`;
+    d.el.style.top = `${(-tmpV.y * 0.5 + 0.5) * innerHeight}px`;
+    d.el.style.opacity = d.t < 0.7 ? 1 : (1.15 - d.t) / 0.45;
+  }
+
+  // ---------- autosave ----------
+  if (started) {
+    saveTimer -= dt;
+    if (saveTimer <= 0) { saveTimer = 20; saveGame(); }
+  }
+
+  composer.render();
+}
+
+addEventListener('beforeunload', saveGame);
+
+// debug / experimental hooks
+window.FABLE = {
+  player, quests, enemies, npcs, chickens, SKY,
+  giveGold: (n) => { player.gold += n; },
+  setDayT: (t) => { SKY.dayT = t; },
+  setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },
+  save: saveGame, load: loadGame,
+  startGame,
+};
+
+animate();

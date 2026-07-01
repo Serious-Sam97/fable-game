@@ -1,0 +1,220 @@
+# FABLE — Roadmap Completo
+### De protótipo a RPG online gigante em Albion
+
+> **Estado atual (v0.2):** mundo único em Three.js, vila + 4 regiões, 3 missões, moralidade
+> (halo/chifres), 6 habilidades, dia/noite, boss Balverine, save local, tudo single-player
+> em 4 módulos ES sem build.
+>
+> **Visão:** um action-RPG online cooperativo estilo *Fable: The Lost Chapters* × *World of
+> Warcraft* — mundo persistente, escolhas morais com consequências, co-op de 2–8 jogadores.
+
+**Regra de ouro da ordem das fases:** multiplayer não é uma feature, é uma arquitetura.
+Tudo que for construído antes da fundação de rede terá que ser reescrito. Por isso a Fase 1
+é rede, e todo conteúdo das fases seguintes já nasce no modelo cliente-servidor.
+
+---
+
+## Fase 0 — Fundação Técnica ("de protótipo a projeto")
+*Pré-requisito de tudo. Sem isso, o projeto desmorona com o próprio peso.*
+
+- [ ] **`git init` + GitHub** — a pasta ainda não é um repositório; primeiro passo absoluto
+- [ ] **Vite + npm** — build, HMR, minificação, imports locais do Three.js (adeus unpkg)
+- [ ] **TypeScript** — essencial para compartilhar código de simulação entre cliente e servidor
+- [ ] **Refatorar para simulação determinística separada da renderização:**
+  - `sim/` — estado do mundo, entidades, combate, IA (roda no cliente E no servidor)
+  - `client/` — Three.js, UI, input, áudio (só no navegador)
+  - `shared/` — tipos, constantes, fórmulas de dano, defs de conteúdo
+- [ ] **Conteúdo data-driven** — inimigos, itens, habilidades, missões e NPCs definidos em
+      JSON/TS declarativo, não hardcoded (`defs/enemies.ts`, `defs/quests.ts`…)
+- [ ] **Event bus** — sistemas conversam por eventos (`enemy:died`, `quest:progress`),
+      não por chamadas diretas; crucial para rede e para plugar sistemas novos
+- [ ] **Save versionado** — `{ version: N }` + migrações, para nunca quebrar saves antigos
+- [ ] **Object pooling** para orbes/projéteis/textos flutuantes; profiler de frame budget
+- [ ] **Testes de fumaça** — Playwright: inicia, anda, mata, salva (roda no CI)
+
+**Pronto quando:** o jogo atual roda idêntico, mas em TS + Vite, com sim/render separados
+e conteúdo em arquivos de definição.
+
+---
+
+## Fase 1 — Multiplayer Core (a fundação de rede) 🎮🎮
+*A fase mais difícil e mais importante. Meta: 2–8 jogadores no mesmo mundo.*
+
+### 1a. Servidor autoritativo
+- [ ] **Node.js + TypeScript + WebSocket** (`ws` ou uWebSockets.js) rodando a `sim/`
+      compartilhada a 20–30 ticks/s — o servidor é a verdade; o cliente só renderiza e prevê
+- [ ] IA, combate, loot, física de jogo e RNG **só no servidor** (anti-cheat de graça)
+- [ ] **Hospedagem caseira:** no ROG Strix G16 (CachyOS) via **Tailscale** — amigos entram
+      pela tailnet sem abrir porta; depois `tailscale funnel` ou VPS para público
+- [ ] Persistência: **SQLite** (contas, personagens, estado do mundo) — Postgres só se crescer
+
+### 1b. Protocolo e netcode
+- [ ] Snapshots com **delta compression** + msgpack (nada de JSON gigante por tick)
+- [ ] **Interest management** — cada cliente só recebe entidades num raio (grade espacial)
+- [ ] **Client-side prediction + reconciliação** para o próprio herói (movimento responsivo)
+- [ ] **Interpolação** de entidades remotas (render ~100 ms no passado)
+- [ ] Reconexão sem perder estado; heartbeat/timeout
+
+### 1c. Jogabilidade multiplayer mínima
+- [ ] Login simples (nome + código de convite), escolha de personagem
+- [ ] Ver outros heróis andando/lutando com nameplates
+- [ ] **Party system** — convidar, XP compartilhado por proximidade, crédito de missão em grupo
+- [ ] **Chat** (área + grupo) e emotes básicos
+- [ ] Regras de loot: orbes de XP individuais, ouro dividido, drops por rolagem
+- [ ] Mundo persistente: dia/noite e respawns continuam com servidor vazio
+
+**Pronto quando:** você e um amigo matam o Balverine juntos pela tailnet, com latência
+imperceptível e o servidor sobrevivendo a refresh dos dois.
+
+---
+
+## Fase 2 — RPG Profundo (agora sim, conteúdo — já multiplayer)
+*Transformar o combate raso em um RPG de verdade.*
+
+### Equipamento & inventário
+- [ ] **Armas visíveis no personagem**: espadas, machados, martelos, arcos, cajados
+      (cada uma com modelo, velocidade, alcance e moveset próprios)
+- [ ] Armaduras por slot (cabeça/peito/pernas/botas) **visíveis** e com peso
+      (leve = esquiva, pesada = defesa) — estilo Fable
+- [ ] Raridades (comum→lendário), afixos ("da Chama", "do Vampiro"), itens únicos com lore
+- [ ] Inventário em grade com drag & drop, comparação de itens, lixeira/venda
+
+### Progressão estilo Fable
+- [ ] **XP tripartido: Força / Habilidade / Vontade** — você vira o que você usa
+      (bater = Força, arco/crítico = Habilidade, magia = Vontade)
+- [ ] Árvores de talento por linha (ex.: Vontade: Fogo→Inferno, Tempo Lento→Parar o Tempo)
+- [ ] A **aparência do herói muda** com os stats: Força = musculoso, Vontade = tatuagens
+      arcanas brilhantes, idade/cicatrizes com o tempo — assinatura de Fable
+
+### Combate
+- [ ] **Bloqueio, esquiva (rolamento) e parry** com timing; stamina
+- [ ] Combos de melee (3 golpes encadeados), finalizadores em inimigos atordoados
+- [ ] **Arco com mira livre** (segurar = tensionar, soltar = disparar)
+- [ ] Efeitos de status: queimadura, congelamento, veneno, atordoamento, medo
+- [ ] Inimigos novos: bandido arqueiro, xamã hobbe (cura os outros!), besouro-bomba,
+      lobo alfa com matilha, espantalho vivo, troll de pedra (mini-boss de área)
+- [ ] IA de grupo: flanquear, recuar para curar, chamar reforços, patrulhas com rotas
+
+**Pronto quando:** dois builds diferentes (guerreiro tanque × mago de vidro) jogam a mesma
+dungeon de formas completamente diferentes.
+
+---
+
+## Fase 3 — Mundo Vivo e Gigante
+*De um mapa para uma Albion.*
+
+### Expansão territorial
+- [ ] **Terreno em chunks com streaming** — mundo 5–10× maior sem custo de memória
+- [ ] Biomas: pântano nebuloso, montanhas nevadas, costa com praia/porto, campos dourados
+- [ ] **2ª cidade grande** (porto comercial) + aldeias menores, cada uma com identidade
+- [ ] **Dungeons com interiores**: cavernas de hobbes, cripta assombrada, forte bandido,
+      minas abandonadas — com puzzles simples, alavancas, baús trancados (chaves de prata!)
+- [ ] **Cullis Gates** — fast travel entre portais desbloqueados (lore de Fable)
+
+### Vida
+- [ ] **NPCs com rotina**: acordam, trabalham, almoçam, vão à taverna, dormem
+      (lojas fecham à noite!)
+- [ ] **Clima**: chuva, neblina, tempestade com raios — afeta visibilidade e spawns
+- [ ] Fauna ambiente: cervos (caçáveis), pássaros, peixes pulando
+- [ ] **Profissões de coleta**: pesca (minigame de timing), mineração, herbalismo, lenhador
+- [ ] **Crafting**: forja (armas/armaduras), alquimia (poções), cozinha (buffs)
+- [ ] **Economia viva**: preços variam por estoque e região; rotas de comércio entre cidades
+      (comprar barato no porto, vender caro na montanha)
+- [ ] **Casas compráveis** com decoração e baú pessoal; aluguel como renda passiva — Fable puro
+- [ ] Crimes: roubar/atacar aldeão → guardas, multa, prisão ou fama sombria
+
+**Pronto quando:** dá para passar uma sessão inteira sem combate — pescando, negociando,
+decorando a casa — e ainda assim progredir.
+
+---
+
+## Fase 4 — Narrativa, Missões & Consequência
+*A alma de Fable: escolhas que deixam cicatriz no mundo.*
+
+- [ ] **Quest engine data-driven**: objetivos compostos (matar/coletar/escoltar/proteger/
+      investigar), etapas, ramificações, flags de mundo — missões viram arquivos, não código
+- [ ] **Sistema de diálogo com árvores** e checks (moralidade, renome, ouro, item na mochila)
+- [ ] **Arco principal** em 3 atos com vilão recorrente (um Herói corrompido estilo
+      Jack of Blades) — 10–15 missões com cutscenes de câmera scriptada
+- [ ] **Consequências visíveis**: salvar ou extorquir a vila muda o mundo — vila próspera
+      (feira nova, NPCs felizes) vs. oprimida (casas fechadas, mendigos); estado por jogador*
+      (*decisões de mundo em MP: votação do grupo ou estado por instância de missão)
+- [ ] **Side quests procedurais** no quadro de avisos: caçadas, entregas, escoltas, resgates
+      — conteúdo infinito barato
+- [ ] Reputação por região (herói em Pedravento, criminoso no porto), disfarces
+- [ ] **Emotes sociais de Fable**: risada, pose heroica, dança, peido — NPCs reagem
+      (e outros jogadores também 😄)
+- [ ] Julgamentos morais maiores: sacrifício no templo do mal, doações no templo da luz
+
+**Pronto quando:** duas campanhas jogadas com moral opostas produzem vilas, diálogos e
+finais visivelmente diferentes.
+
+---
+
+## Fase 5 — Salto Audiovisual
+*Sair dos cubos com carinho para um "low-poly bonito" de verdade.*
+
+- [ ] **Modelos GLTF com esqueleto** — packs CC0 (Quaternius, Kenney) + retoques no Blender;
+      animações via Mixamo (andar, correr, rolar, 3 ataques, morrer, pescar, sentar…)
+- [ ] **Animation state machine** com blending (idle↔walk↔run, upper/lower body separados)
+- [ ] Shaders: água com reflexo/fresnel, **vento na grama e árvores** (vertex shader),
+      neblina volumétrica fake nos vales, god rays no amanhecer
+- [ ] Pós-processamento: SSAO leve, color grading por bioma/hora, vinheta dinâmica
+- [ ] **Áudio real**: samples ambientes (pássaros, vento, taverna), passos por superfície,
+      **música adaptativa em camadas** (explorar → tensão → combate → vitória)
+- [ ] **UI overhaul estilo pergaminho/Fable**: mapa-múndi desenhado à mão, journal de
+      missões ilustrado, tooltips ricos
+- [ ] **Suporte a gamepad** + remapeamento de teclas
+- [ ] Acessibilidade: escala de UI, modo daltônico, i18n (pt-BR/en)
+
+**Pronto quando:** um clipe de 30s do jogo parece um indie charmoso de verdade, não um protótipo.
+
+---
+
+## Fase 6 — Multiplayer Avançado & Endgame
+*O que mantém as pessoas jogando juntas.*
+
+- [ ] **Guildas**: criação, banco compartilhado, hall comprável, ranks
+- [ ] **Trade entre jogadores** com janela segura (confirmação dupla)
+- [ ] **Arena PvP opt-in** (duelos e 2v2) com ranking por temporada — nunca PvP forçado
+- [ ] **Eventos de mundo**: invasão de bandidos na vila (todos defendem), lua de sangue
+      (balverines em todo lugar), mercador misterioso itinerante
+- [ ] **World bosses** semanais que exigem 4+ jogadores
+- [ ] Dungeons instanciadas com dificuldades (normal/heroico) e loot escalado
+- [ ] Casas de guilda decoráveis; casamento entre jogadores (Fable!)
+- [ ] Moderação: mute/kick/ban, filtro de chat, report
+
+---
+
+## Fase 7 — Lançamento & Meta
+- [ ] Contas com senha de verdade (argon2) ou OAuth; proteção básica anti-flood
+- [ ] **Deploy público**: cliente na Vercel/itch.io + servidor num VPS (Fly.io/Hetzner)
+      — ou o ROG Strix como servidor oficial via `tailscale funnel`
+- [ ] Conquistas + estatísticas (galinhas chutadas globalmente 🐔)
+- [ ] New Game+, modo ironman, dificuldades
+- [ ] **Modding leve**: data packs de missões/itens da comunidade (já que tudo é data-driven)
+- [ ] Trailer, página no itch.io, Discord da comunidade
+
+---
+
+## Ordem de execução sugerida
+
+| # | Fase | Esforço estimado | Desbloqueia |
+|---|------|------------------|-------------|
+| 1 | Fase 0 — Fundação | 2–4 sessões | tudo |
+| 2 | Fase 1 — Multiplayer core | 6–10 sessões | jogar com amigos |
+| 3 | Fase 2 — RPG profundo | 6–8 sessões | builds e loot |
+| 4 | Fase 3 — Mundo vivo | 8–12 sessões | exploração |
+| 5 | Fase 4 — Narrativa | 6–8 sessões | campanha |
+| 6 | Fase 5 — Audiovisual | 6–10 sessões | "cara de jogo" |
+| 7 | Fase 6 — MP avançado | 6–8 sessões | endgame |
+| 8 | Fase 7 — Lançamento | 3–5 sessões | público |
+
+*Sessão = uma sessão de trabalho nossa. Fases 2+ podem intercalar (ex.: um item da Fase 5
+como respiro no meio da Fase 3).*
+
+## Quick wins para a próxima sessão
+1. `git init` + primeiro commit (proteger o que já existe)
+2. Migrar para Vite + TypeScript (Fase 0 começa)
+3. Extrair defs de inimigos/missões para arquivos de dados
+4. Esqueleto do servidor Node + eco de posições entre 2 abas (prova de vida do MP)
