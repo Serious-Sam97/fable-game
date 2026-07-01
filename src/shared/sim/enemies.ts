@@ -14,9 +14,14 @@ export interface SimPlayerView {
 export type SimEvent =
   | { t: 'aggro'; id: number }
   | { t: 'eatk'; id: number; pid: number; dmg: number }
+  | { t: 'edmg'; id: number; amount: number; pid: number }              // dano aplicado (todos veem)
   | { t: 'edie'; id: number; killerPid: number }
   | { t: 'eleap'; id: number }
-  | { t: 'eland'; id: number; pid: number; dmg: number };
+  | { t: 'eland'; id: number; pid: number; dmg: number }
+  // efeitos visuais de magia — emitidos pelo CombatSim, renderizados por todos os clientes
+  | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
+  | { t: 'boom'; x: number; z: number }
+  | { t: 'shock'; x: number; z: number };
 
 export type EnemyState = 'idle' | 'chase' | 'attack' | 'return' | 'dead' | 'leap' | 'surrender' | 'flee';
 
@@ -107,6 +112,7 @@ export class EnemySim {
     const e = this.enemies.get(id);
     if (!e || e.state === 'dead' || e.state === 'surrender' || e.state === 'flee') return;
     e.hp -= dmg;
+    this.events.push({ t: 'edmg', id: e.id, amount: dmg, pid: attackerPid });
     if (e.state === 'idle' || e.state === 'return') {
       e.state = 'chase';
       e.targetPid = attackerPid;

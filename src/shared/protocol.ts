@@ -19,19 +19,22 @@ export interface PlayerState {
   dead: boolean;
   halo: boolean;
   horns: boolean;
+  luck: boolean;   // Amuleto da Sorte (+8% dano na fórmula do servidor)
 }
+
+export const CHAT_MAX = 200;
 
 export type ClientMsg =
   | { t: 'state'; s: PlayerState }
-  | { t: 'hit'; id: number; dmg: number }          // TODO Fase 1b: validar dano no servidor
-  | { t: 'knock'; id: number; kx: number; kz: number }
-  | { t: 'slow' }
+  | { t: 'cast'; key: string; targetId?: number }  // validado pelo CombatSim no servidor
+  | { t: 'chat'; text: string }
   | { t: 'surrender' }
   | { t: 'leaderResolve'; spare: boolean }
   | { t: 'spawnBalverine' };
 
 export type ServerMsg =
   | { t: 'welcome'; id: number }
+  | { t: 'chat'; pid: number; name: string; text: string }
   | {
       t: 'snap';
       dayT: number;

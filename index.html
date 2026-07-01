@@ -187,6 +187,21 @@
 
   #help { position: absolute; bottom: 12px; left: 14px; padding: 8px 12px; font-size: 11px; line-height: 1.7; color: #bfa96e; font-family: Arial, sans-serif; }
   #help b { color: #ffd24a; }
+
+  /* ============ chat ============ */
+  #chatLog {
+    position: absolute; bottom: 96px; left: 14px; width: 340px;
+    display: flex; flex-direction: column; gap: 2px; pointer-events: none;
+  }
+  .cmsg { font-family: Arial, sans-serif; font-size: 13px; color: #efe6cd;
+    text-shadow: 1px 1px 1px #000, 0 0 3px #000; transition: opacity 1.2s; word-wrap: break-word; }
+  .cmsg .cname { font-weight: bold; color: #7fd0ff; }
+  .cmsg .csys { font-style: italic; color: #b8a878; }
+  #chatWrap { position: absolute; bottom: 70px; left: 14px; width: 340px; padding: 4px 8px; display: none; pointer-events: auto; }
+  #chatInput {
+    width: 100%; background: transparent; border: none; outline: none;
+    color: #ffe9a8; font-family: Arial, sans-serif; font-size: 13px;
+  }
 </style>
 </head>
 <body>
@@ -278,9 +293,12 @@
   <div id="interact"><b>F</b><span id="interactTxt"></span></div>
   <div id="deathOverlay"><div>Você desmaiou</div><div style="font-size:16px;color:#ffb0a0;margin-top:10px;font-family:'IM Fell English',serif;font-style:italic">Os heróis nunca morrem de verdade…</div></div>
 
+  <div id="chatLog"></div>
+  <div id="chatWrap" class="panel"><input id="chatInput" maxlength="200" placeholder="Diga algo a Albion… (Enter envia, Esc cancela)"></div>
+
   <div id="help" class="panel">
     <b>WASD</b> mover &nbsp; <b>Espaço</b> pular &nbsp; <b>Mouse</b> câmera &nbsp; <b>Scroll</b> zoom &nbsp; <b>Tab</b> alvo &nbsp; <b>1-8</b> habilidades<br>
-    <b>F</b> interagir / chutar galinha &nbsp; <b>C</b> personagem &nbsp; <b>M</b> música &nbsp; <b>Clique</b> selecionar / falar
+    <b>F</b> interagir / chutar galinha &nbsp; <b>C</b> personagem &nbsp; <b>M</b> música &nbsp; <b>Enter</b> chat &nbsp; <b>Clique</b> selecionar / falar
   </div>
 
   <div id="plates"></div>

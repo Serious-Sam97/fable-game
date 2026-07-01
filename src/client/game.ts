@@ -12,8 +12,10 @@ import {
   makeBeast, makeBeetle, makeChicken, makeTextSprite,
 } from './models';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
-import { connectNet, net, sendMsg, drainEvents } from './net';
+import { ABILITIES, FIREBALL_SPEED } from '../shared/defs/abilities';
+import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
 import { EnemySim } from '../shared/sim/enemies';
+import { CombatSim } from '../shared/sim/combat';
 
 buildWorld();
 
@@ -200,7 +202,7 @@ function syncEnemies(dt) {
 function processSimEvents() {
   const evs = net.connected ? drainEvents() : localSim.drainEvents();
   for (const ev of evs) {
-    const v = enemyViews.get(ev.id);
+    const v = 'id' in ev ? enemyViews.get(ev.id) : null;
     switch (ev.t) {
       case 'aggro':
         if (v) floatText(v.pos, '!', '#ff6a6a', 20);
@@ -208,8 +210,44 @@ function processSimEvents() {
         break;
       case 'eatk':
         if (v) v.swingT = 0.3;
-        if (ev.pid === myPid()) damagePlayer(ev.dmg);
+        if (ev.pid === myPid()) {
+          damagePlayer(ev.dmg);
+          if (!net.connected) combatLocal.notePlayerHit(0);
+        }
         break;
+      case 'edmg': {
+        // dano validado pela simulação — todos os clientes veem o número
+        if (!v) break;
+        const mine = ev.pid === myPid();
+        floatText(v.pos, ev.amount, mine ? '#ffd24a' : '#9ad0ff', 18);
+        for (const m of v.model.mats) m.emissive.setHex(0x661111);
+        setTimeout(() => { for (const m of v.model.mats) m.emissive.setHex(0x000000); }, 120);
+        if (mine) {
+          player.lastCombat = time;
+          player.mult = Math.min(99, player.mult + 1);
+          player.multT = 5;
+          const el = $('mult');
+          el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+        }
+        break;
+      }
+      case 'bolt': {
+        const a = new THREE.Vector3(ev.ax, terrainHeight(ev.ax, ev.az) + ev.ay, ev.az);
+        const b = new THREE.Vector3(ev.bx, terrainHeight(ev.bx, ev.bz) + ev.by, ev.bz);
+        lightningBolt(a, b);
+        break;
+      }
+      case 'boom': {
+        const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z) + 1, ev.z);
+        explosion(p);
+        beep(100, 0.15, 'sawtooth', 0.05);
+        break;
+      }
+      case 'shock': {
+        const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z), ev.z);
+        ringEffect(p, 0xbfe0ff, 9);
+        break;
+      }
       case 'eleap':
         if (v) floatText(v.pos, '🐺 SALTO!', '#ff8a5a', 16);
         break;
@@ -218,7 +256,16 @@ function processSimEvents() {
         if (ev.pid === myPid() && ev.dmg > 0) damagePlayer(ev.dmg);
         break;
       case 'edie':
-        if (v) onEnemyDeath(v, ev.killerPid === myPid());
+        if (v) {
+          const mine = ev.killerPid === myPid();
+          onEnemyDeath(v, mine);
+          // XP de grupo: quem estava perto da caçada ganha metade (co-op)
+          if (!mine && ev.killerPid > 0 && player.pos.distanceTo(v.pos) < 30) {
+            const share = Math.round(v.def.xp * 0.5);
+            gainXP(share);
+            floatText(player.pos, `+${share} XP (grupo)`, '#b06ae8', 13);
+          }
+        }
         break;
     }
   }
@@ -347,26 +394,8 @@ const projectiles = [];
 let time = 0;
 let shake = 0;
 
-function dmgMult() {
-  return (1 + Math.min(player.mult, 25) * 0.03) * (player.luckCharm ? 1.08 : 1);
-}
-function damageEnemy(e, dmg, { fromPlayer = true } = {}) {
-  if (e.state === 'dead' || e.state === 'surrender' || e.state === 'flee') return;
-  if (fromPlayer) {
-    dmg = Math.round(dmg * dmgMult());
-    player.mult = Math.min(99, player.mult + 1);
-    player.multT = 5;
-    const el = $('mult');
-    el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
-  }
-  player.lastCombat = time;
-  floatText(e.pos, dmg, '#ffd24a', 18);
-  for (const m of e.model.mats) m.emissive.setHex(0x661111);
-  setTimeout(() => { for (const m of e.model.mats) m.emissive.setHex(0x000000); }, 120);
-  // o dano é aplicado pela simulação: servidor quando online, localSim quando solo
-  if (net.connected) sendMsg({ t: 'hit', id: e.id, dmg });
-  else localSim.applyDamage(e.id, dmg, 0);
-}
+// dano agora é 100% decidido pela simulação (CombatSim) — o cliente só renderiza
+// os eventos 'edmg'/'boom'/'bolt'/'shock' que chegam dela (veja processSimEvents)
 
 // chamado via evento 'edie' da simulação; `mine` = fui eu quem matou
 function onEnemyDeath(e, mine) {
@@ -459,70 +488,57 @@ function changeMorality(amt) {
 }
 
 // ============================================================ abilities
+// dano/alcance/cooldown são decididos pelo CombatSim (servidor online, local solo);
+// aqui ficam só a pré-validação de UI e os efeitos imediatos do próprio herói
+const combatLocal = new CombatSim(localSim);
+function castAbility(key, tgt) {
+  if (net.connected) {
+    sendMsg({ t: 'cast', key, targetId: tgt ? tgt.id : undefined });
+  } else {
+    combatLocal.cast(
+      { id: 0, x: player.pos.x, z: player.pos.z, lvl: player.level, luck: player.luckCharm },
+      key, tgt ? tgt.id : undefined,
+    );
+  }
+}
+
 const abilities = [
-  { name: 'Golpe', range: 3.8, cost: 0, cd: 0, needTarget: true,
+  { ...ABILITIES.golpe, name: 'Golpe',
     use(t) {
       player.swingT = 0.35;
-      damageEnemy(t, Math.round(12 + player.level * 3 + Math.random() * 8));
       beep(160, 0.08, 'square', 0.06);
+      castAbility('golpe', t);
     } },
-  { name: 'Bola de Fogo', range: 30, cost: 20, cd: 3.5, needTarget: true,
+  { ...ABILITIES.bola, name: 'Bola de Fogo',
     use(t) {
+      // projétil é só visual — o dano chega via evento 'boom'/'edmg' da simulação
       const m = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 10), new THREE.MeshBasicMaterial({ color: 0xff8a2a }));
       m.position.copy(player.pos).add(new THREE.Vector3(0, 1.8, 0));
       scene.add(m);
-      projectiles.push({ mesh: m, target: t, dmg: Math.round(20 + player.level * 4 + Math.random() * 10), speed: 26 });
+      projectiles.push({ mesh: m, target: t, speed: FIREBALL_SPEED });
       beep(520, 0.18, 'sawtooth', 0.05, -260);
+      castAbility('bola', t);
     } },
-  { name: 'Relâmpago', range: 28, cost: 25, cd: 6, needTarget: true,
+  { ...ABILITIES.relampago, name: 'Relâmpago',
     use(t) {
-      const src = player.pos.clone().add(new THREE.Vector3(0, 2, 0));
-      const hitPos = t.pos.clone().add(new THREE.Vector3(0, 1.2, 0));
-      lightningBolt(src, hitPos);
-      const dmg = Math.round(16 + player.level * 4);
-      damageEnemy(t, dmg + Math.round(Math.random() * 8));
-      // chain to up to 2 nearby enemies
-      let last = t, chained = 0;
-      for (const e of enemies) {
-        if (chained >= 2) break;
-        if (e === t || e.state === 'dead' || e.state === 'surrender') continue;
-        if (e.pos.distanceTo(last.pos) < 9) {
-          lightningBolt(last.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), e.pos.clone().add(new THREE.Vector3(0, 1.2, 0)));
-          damageEnemy(e, Math.round(dmg * 0.6));
-          last = e; chained++;
-        }
-      }
       beep(1400, 0.2, 'sawtooth', 0.05, -900);
       noiseBurst(0.15, 0.05);
+      castAbility('relampago', t); // raios desenhados pelos eventos 'bolt'
     } },
-  { name: 'Empurrão', range: 0, cost: 20, cd: 8, needTarget: false,
+  { ...ABILITIES.empurrao, name: 'Empurrão',
     use() {
-      ringEffect(player.pos, 0xbfe0ff, 9);
-      let hit = 0;
-      for (const e of enemies) {
-        if (e.state === 'dead' || e.state === 'surrender') continue;
-        const d = e.pos.distanceTo(player.pos);
-        if (d < 8) {
-          damageEnemy(e, Math.round(8 + player.level * 2));
-          const dir = e.pos.clone().sub(player.pos).setY(0).normalize();
-          if (net.connected) sendMsg({ t: 'knock', id: e.id, kx: dir.x * 16, kz: dir.z * 16 });
-          else localSim.knock(e.id, dir.x * 16, dir.z * 16);
-          hit++;
-        }
-      }
       beep(90, 0.35, 'sawtooth', 0.08, -40);
       shake = 0.25;
-      if (!hit) floatText(player.pos, 'Nenhum inimigo próximo', '#aaa', 13);
+      castAbility('empurrao', null); // anel desenhado pelo evento 'shock'
     } },
-  { name: 'Tempo Lento', range: 0, cost: 35, cd: 22, needTarget: false,
+  { ...ABILITIES.tempolento, name: 'Tempo Lento',
     use() {
       player.slowT = 6; // overlay visual local
-      if (net.connected) sendMsg({ t: 'slow' });
-      else localSim.castSlow();
+      castAbility('tempolento', null);
       beep(50, 1.2, 'sine', 0.09, 40);
       floatText(player.pos, '⏳ O tempo desacelera…', '#9ad0ff', 16);
     } },
-  { name: 'Cura', range: 0, cost: 25, cd: 8, needTarget: false,
+  { ...ABILITIES.cura, name: 'Cura', // cura é 100% local (só afeta o próprio herói)
     use() {
       const amt = Math.round(30 + player.level * 7);
       player.hp = Math.min(player.maxHp, player.hp + amt);
@@ -844,6 +860,8 @@ let camYaw = 0.6, camPitch = 0.36, camDist = 11;
 
 addEventListener('keydown', (ev) => {
   if (!started) return;
+  if (chatOpen) return; // digitando no chat — o input trata as teclas
+  if (ev.code === 'Enter') { openChat(); return; }
   if (ev.code === 'Tab') {
     ev.preventDefault();
     let best = null, bd = 45;
@@ -991,8 +1009,9 @@ function startGame(fromSave) {
     () => ({
       x: player.pos.x, z: player.pos.z, ry: heroModel.group.rotation.y,
       name: NET_NAME, lvl: player.level,
-      moving: !!player.moving && !player.dead,
+      moving: !!player.moving && !player.dead, dead: player.dead,
       halo: heroModel.halo.visible, horns: heroModel.horns.visible,
+      luck: player.luckCharm,
     }),
     (id) => toast(`🌐 Albion online — você é ${NET_NAME} (#${id})`)
   );
@@ -1220,6 +1239,49 @@ function updateRemoteHeroes(dt) {
   }
 }
 
+// ============================================================ chat
+const chatLog = $('chatLog');
+const chatWrap = $('chatWrap');
+const chatInput = $('chatInput');
+let chatOpen = false;
+
+function addChatLine(name, text, system = false) {
+  const el = document.createElement('div');
+  el.className = 'cmsg';
+  const nameSpan = document.createElement('span');
+  nameSpan.className = system ? 'csys' : 'cname';
+  nameSpan.textContent = system ? `${name}: ${text}` : `[${name}] `;
+  el.appendChild(nameSpan);
+  if (!system) el.appendChild(document.createTextNode(text));
+  chatLog.appendChild(el);
+  while (chatLog.children.length > 8) chatLog.firstChild.remove();
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 1300); }, 14000);
+}
+function openChat() {
+  chatOpen = true;
+  chatWrap.style.display = 'block';
+  setTimeout(() => chatInput.focus(), 0);
+}
+function closeChat() {
+  chatOpen = false;
+  chatInput.value = '';
+  chatWrap.style.display = 'none';
+  chatInput.blur();
+}
+chatInput.addEventListener('keydown', (ev) => {
+  ev.stopPropagation();
+  if (ev.code === 'Enter') {
+    const text = chatInput.value.trim();
+    if (text) {
+      if (net.connected) sendMsg({ t: 'chat', text });
+      else addChatLine(NET_NAME, text); // eco local no modo solo
+    }
+    closeChat();
+  } else if (ev.code === 'Escape') {
+    closeChat();
+  }
+});
+
 // ============================================================ main loop
 const clock = new THREE.Clock();
 const tmpV = new THREE.Vector3();
@@ -1303,9 +1365,11 @@ function tick() {
   if (started) {
     if (!net.connected) {
       localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead }], SKY.nightF);
+      combatLocal.update(dt);
     }
     syncEnemies(dt);
     processSimEvents();
+    for (const c of drainChat()) addChatLine(c.name, c.text, c.pid === 0);
     for (const c of chickens) updateChicken(c, dt);
     for (const n of npcs) updateNpc(n, dt);
     guildmasterHints(dt);
@@ -1313,18 +1377,15 @@ function tick() {
     updateRemoteHeroes(dt);
   }
 
-  // ---------- projectiles ----------
+  // ---------- projectiles (visuais — dano e explosão vêm da simulação) ----------
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
     const dest = tmpV.copy(p.target.pos).add(new THREE.Vector3(0, 1, 0));
     const dir = dest.sub(p.mesh.position);
     const d = dir.length();
     if (d < 0.6 || p.target.state === 'dead') {
-      explosion(p.mesh.position);
-      if (p.target.state !== 'dead') damageEnemy(p.target, p.dmg);
       scene.remove(p.mesh);
       projectiles.splice(i, 1);
-      beep(100, 0.15, 'sawtooth', 0.05);
     } else {
       p.mesh.position.addScaledVector(dir.normalize(), Math.min(d, p.speed * dt));
     }
@@ -1466,7 +1527,7 @@ addEventListener('beforeunload', saveGame);
 
 // debug / experimental hooks
 window.FABLE = {
-  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim,
+  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

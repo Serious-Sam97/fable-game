@@ -43,8 +43,9 @@ e conteúdo em arquivos de definição.
 ### 1a. Servidor autoritativo
 - [x] **Node.js + TypeScript + WebSocket** rodando a sim compartilhada a 30 ticks/s —
       inimigos e hora do mundo são do servidor; cliente cai para sim local quando offline
-- [ ] IA ✅ / hora do mundo ✅; falta: validar dano/alcance/cooldown no servidor
-      (hoje o cliente reporta o dano — TODO marcado no protocolo)
+- [x] IA ✅ / hora do mundo ✅ / **combate validado no servidor** ✅ (CombatSim:
+      range com tolerância de latência, cooldown, GCD, fórmula de dano e
+      multiplicador rastreados server-side; casts inválidos são descartados)
 - [ ] **Hospedagem caseira:** no ROG Strix G16 (CachyOS) via **Tailscale** — amigos entram
       pela tailnet sem abrir porta; depois `tailscale funnel` ou VPS para público
 - [ ] Persistência: **SQLite** (contas, personagens, estado do mundo) — Postgres só se crescer
@@ -58,11 +59,13 @@ e conteúdo em arquivos de definição.
 
 ### 1c. Jogabilidade multiplayer mínima
 - [ ] Login simples (nome + código de convite), escolha de personagem
-- [ ] Ver outros heróis andando/lutando com nameplates
-- [ ] **Party system** — convidar, XP compartilhado por proximidade, crédito de missão em grupo
-- [ ] **Chat** (área + grupo) e emotes básicos
-- [ ] Regras de loot: orbes de XP individuais, ouro dividido, drops por rolagem
-- [ ] Mundo persistente: dia/noite e respawns continuam com servidor vazio
+- [x] Ver outros heróis andando/lutando com nameplates (+ magias dos outros visíveis
+      via eventos bolt/boom/shock)
+- [ ] **Party system** — XP compartilhado por proximidade ✅ (50% num raio de 30 m);
+      falta: convite formal e crédito de missão em grupo
+- [x] **Chat** de área com mensagens de sistema (entrou/saiu do mundo)
+- [x] Regras de loot: orbes de XP/ouro são de quem matou; XP parcial para aliados perto
+- [x] Mundo persistente: dia/noite e respawns continuam com servidor vazio
 
 **Pronto quando:** você e um amigo matam o Balverine juntos pela tailnet, com latência
 imperceptível e o servidor sobrevivendo a refresh dos dois.

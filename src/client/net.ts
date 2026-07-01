@@ -17,13 +17,15 @@ interface NetState {
   enemies: EnemySnap[];
   /** eventos de simulação acumulados desde o último drain */
   events: SimEvent[];
+  /** mensagens de chat acumuladas desde o último drain */
+  chat: Array<{ pid: number; name: string; text: string }>;
   /** hora do mundo do servidor (dayT) — null até o primeiro snap */
   serverDayT: number | null;
 }
 
 export const net: NetState = {
   id: 0, connected: false, remotes: new Map(),
-  enemies: [], events: [], serverDayT: null,
+  enemies: [], events: [], chat: [], serverDayT: null,
 };
 
 let ws: WebSocket | null = null;
@@ -37,6 +39,12 @@ export function drainEvents(): SimEvent[] {
   const ev = net.events;
   net.events = [];
   return ev;
+}
+
+export function drainChat() {
+  const c = net.chat;
+  net.chat = [];
+  return c;
 }
 
 export function connectNet(getState: () => PlayerState, onConnectCb?: (id: number) => void) {
@@ -57,6 +65,8 @@ export function connectNet(getState: () => PlayerState, onConnectCb?: (id: numbe
       if (m.t === 'welcome') {
         net.id = m.id;
         onConnectCb?.(m.id);
+      } else if (m.t === 'chat') {
+        net.chat.push({ pid: m.pid, name: m.name, text: m.text });
       } else if (m.t === 'snap') {
         net.serverDayT = m.dayT;
         net.enemies = m.enemies;
@@ -78,6 +88,7 @@ export function connectNet(getState: () => PlayerState, onConnectCb?: (id: numbe
       net.remotes.clear();
       net.enemies = [];
       net.events = [];
+      net.chat = [];
       net.serverDayT = null;
       if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
       // tenta reconectar de tempos em tempos (servidor pode subir depois)
