@@ -52,6 +52,13 @@
   #titleScreen button:hover:not(:disabled) { color: #ffe9a8; text-shadow: 0 0 14px rgba(255,210,90,.8), 1px 1px 2px #000; transform: scale(1.06); }
   #titleScreen button:disabled { color: #55503f; cursor: default; }
   #titleScreen .hint { position: absolute; bottom: 28px; font-size: 13px; color: #8a7a55; font-style: italic; }
+  #heroName {
+    font-family: 'IM Fell English', serif; font-size: 18px; text-align: center;
+    background: rgba(20,16,8,.7); border: 1px solid #8a6d2f; border-radius: 5px;
+    color: #ffe9a8; padding: 8px 14px; width: 260px; margin-bottom: 26px; outline: none;
+  }
+  #heroName:focus { border-color: #ffd24a; box-shadow: 0 0 12px rgba(255,210,74,.35); }
+  #heroName::placeholder { color: #8a7a55; font-style: italic; }
 
   /* ============ unit frames ============ */
   .unitframe { position: absolute; top: 14px; display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px; min-width: 240px; }
@@ -212,6 +219,7 @@
 <div id="titleScreen">
   <h1>FABLE</h1>
   <div class="sub">~ As Colinas de Pedravento ~</div>
+  <input id="heroName" maxlength="16" placeholder="Nome do seu herói" autocomplete="off">
   <button id="btnContinue" disabled>Continuar</button>
   <button id="btnNew">Novo Jogo</button>
   <div class="hint">Para cada escolha, uma consequência…</div>

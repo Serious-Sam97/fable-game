@@ -10,6 +10,7 @@
     "server": "tsx server/server.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "three": "^0.160.1",
     "ws": "^8.18.0"
   },

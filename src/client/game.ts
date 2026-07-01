@@ -256,16 +256,7 @@ function processSimEvents() {
         if (ev.pid === myPid() && ev.dmg > 0) damagePlayer(ev.dmg);
         break;
       case 'edie':
-        if (v) {
-          const mine = ev.killerPid === myPid();
-          onEnemyDeath(v, mine);
-          // XP de grupo: quem estava perto da caçada ganha metade (co-op)
-          if (!mine && ev.killerPid > 0 && player.pos.distanceTo(v.pos) < 30) {
-            const share = Math.round(v.def.xp * 0.5);
-            gainXP(share);
-            floatText(player.pos, `+${share} XP (grupo)`, '#b06ae8', 13);
-          }
-        }
+        if (v) onEnemyDeath(v, ev.killerPid === myPid(), ev.killerPid);
         break;
     }
   }
@@ -398,7 +389,7 @@ let shake = 0;
 // os eventos 'edmg'/'boom'/'bolt'/'shock' que chegam dela (veja processSimEvents)
 
 // chamado via evento 'edie' da simulação; `mine` = fui eu quem matou
-function onEnemyDeath(e, mine) {
+function onEnemyDeath(e, mine, killerPid) {
   if (target === e) setTarget(null);
   beep(120, 0.3, 'triangle', 0.06, -60);
   if (e.isLeader) {
@@ -406,13 +397,22 @@ function onEnemyDeath(e, mine) {
     quests.q2.choice = quests.q2.choice || 'killed';
     checkQ2Done(); updateQuestUI(); saveGame();
   }
-  if (!mine) return; // loot e crédito de missão são de quem matou
-  player.kills++;
-  const gold = e.def.gold[0] + Math.round(Math.random() * (e.def.gold[1] - e.def.gold[0]));
-  dropOrbs(e.pos, e.def.xp, gold);
-  if (e.def.renown) gainRenown(e.def.renown);
+  if (mine) {
+    player.kills++;
+    const gold = e.def.gold[0] + Math.round(Math.random() * (e.def.gold[1] - e.def.gold[0]));
+    dropOrbs(e.pos, e.def.xp, gold);
+    if (e.def.renown) gainRenown(e.def.renown);
+    questCredit(e);
+  } else if (killerPid > 0 && player.pos.distanceTo(e.pos) < 30) {
+    // caçada em grupo: aliado perto ganha metade do XP e crédito de missão
+    const share = Math.round(e.def.xp * 0.5);
+    gainXP(share);
+    floatText(player.pos, `+${share} XP (grupo)`, '#b06ae8', 13);
+    questCredit(e);
+  }
+}
 
-  // quest credit
+function questCredit(e) {
   if (e.type === 'besouro' && quests.q1.state === 'active' && quests.q1.count < quests.q1.goal) {
     quests.q1.count++;
     floatText(e.pos, `Besouros: ${quests.q1.count}/${quests.q1.goal}`, '#8fd0ff', 13);
@@ -950,9 +950,8 @@ function playerDie() {
 }
 
 // ============================================================ save / load
-function saveGame() {
-  if (!started) return;
-  const data = {
+function buildSaveData() {
+  return {
     level: player.level, xp: player.xp, gold: player.gold,
     morality: player.morality, renown: player.renown,
     potions: player.potions, kicks: player.kicks, kills: player.kills,
@@ -964,12 +963,21 @@ function saveGame() {
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
   };
+}
+function saveGame() {
+  if (!started) return;
+  const data = buildSaveData();
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) { /* full/blocked */ }
+  if (net.connected) sendMsg({ t: 'save', data }); // persistência no servidor (SQLite)
 }
 function loadGame() {
   let data = null;
   try { data = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch (e) { /* corrupt */ }
   if (!data) return false;
+  applySaveData(data);
+  return true;
+}
+function applySaveData(data) {
   player.level = data.level; player.xp = data.xp; player.gold = data.gold;
   player.morality = data.morality; player.renown = data.renown;
   player.potions = data.potions; player.kicks = data.kicks; player.kills = data.kills || 0;
@@ -987,21 +995,32 @@ function loadGame() {
   if (quests.q3.state === 'active') requestSpawnBalverine();
   updateMoralityVisuals();
   updateQuestUI();
-  return true;
 }
 
 // ============================================================ title screen
 let started = false;
+let freshStart = false;
 {
-  const hasSave = !!localStorage.getItem(SAVE_KEY);
-  $('btnContinue').disabled = !hasSave;
+  $('heroName').value = localStorage.getItem('fable_hero_name') || '';
+  // "Continuar" fica sempre ativo: carrega o save local se houver e,
+  // online, o personagem deste nome vem do servidor de qualquer forma
+  $('btnContinue').disabled = false;
   $('btnNew').onclick = () => {
     localStorage.removeItem(SAVE_KEY);
+    freshStart = true; // descarta também o personagem deste nome no servidor
     startGame(false);
   };
   $('btnContinue').onclick = () => startGame(true);
 }
+function heroNameFromInput() {
+  const v = $('heroName').value.replace(/[<>&"']/g, '').trim().slice(0, 16);
+  return v || 'Galo-' + Math.floor(100 + Math.random() * 900);
+}
 function startGame(fromSave) {
+  NET_NAME = heroNameFromInput();
+  localStorage.setItem('fable_hero_name', NET_NAME);
+  document.querySelector('#playerFrame .uf-name').textContent = NET_NAME;
+  document.querySelector('#charPanel h2').textContent = NET_NAME;
   if (fromSave) loadGame();
   started = true;
   startMusic();
@@ -1013,7 +1032,22 @@ function startGame(fromSave) {
       halo: heroModel.halo.visible, horns: heroModel.horns.visible,
       luck: player.luckCharm,
     }),
-    (id) => toast(`🌐 Albion online — você é ${NET_NAME} (#${id})`)
+    {
+      login: () => {
+        const fresh = freshStart;
+        freshStart = false; // só o primeiro login descarta; reconexões preservam
+        return { name: NET_NAME, fresh };
+      },
+      onLogin: (data) => {
+        if (data) {
+          applySaveData(data);
+          toast('🌐 Personagem carregado do servidor');
+        } else {
+          saveGame(); // registra o personagem novo no servidor
+        }
+      },
+      onConnect: (id) => toast(`🌐 Albion online — você é ${NET_NAME} (#${id})`),
+    }
   );
   const ts = $('titleScreen');
   ts.style.opacity = 0;
@@ -1187,7 +1221,7 @@ function updateNpc(n, dt) {
 }
 
 // ============================================================ multiplayer
-const NET_NAME = 'Galo-' + Math.floor(100 + Math.random() * 900);
+let NET_NAME = 'Galo'; // definido na tela de título
 const remoteHeroes = new Map();
 
 function ensureRemoteHero(id) {

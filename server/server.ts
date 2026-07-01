@@ -3,19 +3,38 @@
 // pelo mesmo CombatSim que roda no cliente em modo solo.
 // Rodar: npm run server  (porta 8787)
 import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EnemySim } from '../src/shared/sim/enemies';
 import { CombatSim } from '../src/shared/sim/combat';
 import { smoothstep } from '../src/shared/math';
-import { NET_PORT, SERVER_SNAP_HZ, SERVER_TICK_HZ, DAY_LEN, CHAT_MAX } from '../src/shared/protocol';
+import { NET_PORT, SERVER_SNAP_HZ, SERVER_TICK_HZ, DAY_LEN, CHAT_MAX, NAME_MAX, SAVE_MAX_BYTES } from '../src/shared/protocol';
 import type { PlayerState, ClientMsg } from '../src/shared/protocol';
+
+// ---- persistência (personagens por nome; TODO Fase 2: contas com senha) ----
+const db = new Database(fileURLToPath(new URL('./fable.db', import.meta.url)));
+db.pragma('journal_mode = WAL');
+db.exec(`CREATE TABLE IF NOT EXISTS characters (
+  name TEXT PRIMARY KEY,
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+)`);
+const getChar = db.prepare('SELECT data FROM characters WHERE name = ?');
+const putChar = db.prepare(`INSERT INTO characters (name, data, updated_at) VALUES (?, ?, ?)
+  ON CONFLICT(name) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`);
+const delChar = db.prepare('DELETE FROM characters WHERE name = ?');
+
+function cleanName(raw: unknown): string {
+  return String(raw ?? '').replace(/[<>&"']/g, '').trim().slice(0, NAME_MAX) || 'Sem-Nome';
+}
 
 const sim = new EnemySim();
 const combat = new CombatSim(sim);
 let dayT = 0.09; // manhã em Albion
 const pendingEvents: ReturnType<EnemySim['drainEvents']> = [];
 
-const players = new Map<number, { ws: WebSocket; state: PlayerState | null }>();
+const players = new Map<number, { ws: WebSocket; state: PlayerState | null; charName: string | null }>();
 let nextId = 1;
 
 function broadcast(obj: unknown) {
@@ -34,7 +53,7 @@ const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws, req) => {
   const id = nextId++;
-  players.set(id, { ws, state: null });
+  players.set(id, { ws, state: null, charName: null });
   ws.send(JSON.stringify({ t: 'welcome', id }));
   console.log(`[+] herói #${id} conectou (${req.socket.remoteAddress}) — online: ${players.size}`);
 
@@ -51,6 +70,24 @@ wss.on('connection', (ws, req) => {
           if (first) broadcast({ t: 'chat', pid: 0, name: 'Albion', text: `${m.s.name} entrou no mundo` });
         }
         break;
+      case 'login': {
+        const name = cleanName(m.name);
+        p.charName = name;
+        if (m.fresh) delChar.run(name);
+        const row = getChar.get(name) as { data: string } | undefined;
+        let data: unknown = null;
+        if (row) { try { data = JSON.parse(row.data); } catch { data = null; } }
+        ws.send(JSON.stringify({ t: 'loginOk', data }));
+        console.log(`[${id}] login "${name}" — ${data ? 'personagem carregado' : 'novo personagem'}${m.fresh ? ' (reset)' : ''}`);
+        break;
+      }
+      case 'save': {
+        if (!p.charName || typeof m.data !== 'object' || m.data === null) break;
+        const json = JSON.stringify(m.data);
+        if (json.length > SAVE_MAX_BYTES) break;
+        putChar.run(p.charName, json, Date.now());
+        break;
+      }
       case 'cast': {
         const s = p.state;
         if (!s || s.dead) break;

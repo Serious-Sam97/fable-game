@@ -47,7 +47,15 @@ export function drainChat() {
   return c;
 }
 
-export function connectNet(getState: () => PlayerState, onConnectCb?: (id: number) => void) {
+export interface NetCallbacks {
+  /** credenciais enviadas a cada (re)conexão — fresh descarta o personagem no servidor */
+  login: () => { name: string; fresh: boolean };
+  /** dados do personagem vindos do servidor (null = personagem novo) */
+  onLogin?: (data: unknown | null) => void;
+  onConnect?: (id: number) => void;
+}
+
+export function connectNet(getState: () => PlayerState, cbs: NetCallbacks) {
   const open = () => {
     try {
       ws = new WebSocket(`ws://${location.hostname}:${NET_PORT}`);
@@ -64,7 +72,10 @@ export function connectNet(getState: () => PlayerState, onConnectCb?: (id: numbe
       try { m = JSON.parse(ev.data); } catch { return; }
       if (m.t === 'welcome') {
         net.id = m.id;
-        onConnectCb?.(m.id);
+        cbs.onConnect?.(m.id);
+        sendMsg({ t: 'login', ...cbs.login() });
+      } else if (m.t === 'loginOk') {
+        cbs.onLogin?.(m.data ?? null);
       } else if (m.t === 'chat') {
         net.chat.push({ pid: m.pid, name: m.name, text: m.text });
       } else if (m.t === 'snap') {

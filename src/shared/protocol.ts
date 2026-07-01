@@ -24,8 +24,13 @@ export interface PlayerState {
 
 export const CHAT_MAX = 200;
 
+export const NAME_MAX = 16;
+export const SAVE_MAX_BYTES = 8192;
+
 export type ClientMsg =
   | { t: 'state'; s: PlayerState }
+  | { t: 'login'; name: string; fresh: boolean }   // fresh = "Novo Jogo": descarta o personagem salvo
+  | { t: 'save'; data: unknown }                   // blob de progresso persistido por nome no SQLite
   | { t: 'cast'; key: string; targetId?: number }  // validado pelo CombatSim no servidor
   | { t: 'chat'; text: string }
   | { t: 'surrender' }
@@ -34,6 +39,7 @@ export type ClientMsg =
 
 export type ServerMsg =
   | { t: 'welcome'; id: number }
+  | { t: 'loginOk'; data: unknown | null }         // personagem salvo (ou null se novo)
   | { t: 'chat'; pid: number; name: string; text: string }
   | {
       t: 'snap';
