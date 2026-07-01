@@ -2,15 +2,17 @@ import * as THREE from 'three';
 import {
   canvas, scene, camera, composer, SKY, updateSky, skyHour,
   beep, noiseBurst, startMusic, toggleMusic, clamp, lerp, rnd,
-} from './core.js';
+} from './core';
 import {
   WORLD_R, LAKE, terrainHeight, buildWorld, updateWorld,
   chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST,
-} from './world.js';
+} from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
   makeBeast, makeBeetle, makeChicken, makeTextSprite,
-} from './models.js';
+} from './models';
+import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
+import { connectNet, net } from './net';
 
 buildWorld();
 
@@ -99,18 +101,20 @@ for (let i = 0; i < 6; i++) {
 
 // ============================================================ enemies
 const enemies = [];
-const DEFS = {
-  besouro:  { name: 'Besouro Colossal', lvl: 1, hp: 26, dmg: [2, 4], xp: 20, gold: [1, 3], renown: 0, speed: 3.6, aggro: 9, atkR: 1.5, atkCd: 1.4, icon: '🪲', plateH: 1.0, respawn: 12, maker: () => makeBeetle() },
-  lobo:     { name: 'Lobo Sombrio', lvl: 3, hp: 90, dmg: [6, 10], xp: 50, gold: [0, 2], renown: 1, speed: 5.4, aggro: 13, atkR: 2.2, atkCd: 1.5, icon: '🐺', plateH: 1.7, respawn: 20, maker: () => makeBeast({ color: 0x555a66, scale: 1.1, tail: true }) },
-  bandido:  { name: 'Bandido', lvl: 4, hp: 130, dmg: [9, 14], xp: 70, gold: [8, 16], renown: 1, speed: 4.6, aggro: 14, atkR: 2.3, atkCd: 1.7, icon: '🗡️', plateH: 2.7, respawn: 24, maker: () => makeBandit() },
-  chefe:    { name: 'Rufião, Chefe Bandido', lvl: 6, hp: 240, dmg: [12, 18], xp: 150, gold: [30, 40], renown: 3, speed: 4.8, aggro: 14, atkR: 2.4, atkCd: 1.5, icon: '💀', plateH: 2.8, respawn: 0, maker: () => makeBandit({ leader: true }) },
-  hobbe:    { name: 'Hobbe', lvl: 3, hp: 85, dmg: [7, 11], xp: 55, gold: [4, 9], renown: 1, speed: 4.2, aggro: 12, atkR: 1.9, atkCd: 1.5, icon: '👺', plateH: 2.0, respawn: 22, maker: () => makeHobbe() },
-  balverine:{ name: 'Balverine Ancião', lvl: 9, hp: 620, dmg: [16, 24], xp: 420, gold: [90, 120], renown: 12, speed: 6.4, aggro: 26, atkR: 2.8, atkCd: 1.6, icon: '👹', plateH: 4.4, respawn: 0, maker: () => makeBalverine() },
+const DEFS = ENEMY_DEFS;
+// modelos 3D são responsabilidade do cliente; o servidor conhece só os números (shared/defs)
+const MAKERS = {
+  besouro: () => makeBeetle(),
+  lobo: () => makeBeast({ color: 0x555a66, scale: 1.1, tail: true }),
+  bandido: () => makeBandit(),
+  chefe: () => makeBandit({ leader: true }),
+  hobbe: () => makeHobbe(),
+  balverine: () => makeBalverine(),
 };
 
 function spawnEnemy(typeKey, x, z, extra = {}) {
   const def = DEFS[typeKey];
-  const model = def.maker();
+  const model = MAKERS[typeKey]();
   scene.add(model.group);
   const plate = document.createElement('div');
   plate.className = 'plate';
@@ -906,6 +910,15 @@ function startGame(fromSave) {
   if (fromSave) loadGame();
   started = true;
   startMusic();
+  connectNet(
+    () => ({
+      x: player.pos.x, z: player.pos.z, ry: heroModel.group.rotation.y,
+      name: NET_NAME, lvl: player.level,
+      moving: !!player.moving && !player.dead,
+      halo: heroModel.halo.visible, horns: heroModel.horns.visible,
+    }),
+    (id) => toast(`🌐 Albion online — você é ${NET_NAME} (#${id})`)
+  );
   const ts = $('titleScreen');
   ts.style.opacity = 0;
   setTimeout(() => { ts.style.display = 'none'; }, 1200);
@@ -957,6 +970,12 @@ function drawMinimap() {
     const [x, y] = toMap(c.pos.x, c.pos.z);
     mm.fillRect(x - 1, y - 1, 2, 2);
   }
+  // outros heróis online
+  mm.fillStyle = '#7fd0ff';
+  for (const [, r] of remoteHeroes) {
+    const [x, y] = toMap(r.x, r.z);
+    mm.beginPath(); mm.arc(x, y, 3, 0, Math.PI * 2); mm.fill();
+  }
   // player arrow
   const fy = heroModel.group.rotation.y;
   mm.save();
@@ -991,13 +1010,13 @@ function moveEnemyToward(e, targetPos, speed, dt) {
   if (d < 0.3) return;
   e.pos.x += (dx / d) * speed * dt;
   e.pos.z += (dz / d) * speed * dt;
-  e.model.group.rotation.y = e.def.maker === DEFS.lobo.maker || e.type === 'lobo' || e.type === 'besouro'
+  e.model.group.rotation.y = FACE_X.has(e.type)
     ? Math.atan2(dx, dz) - Math.PI / 2
     : Math.atan2(dx, dz);
   e.walkT += dt * speed * 2.2;
 }
 // beasts face +x, humanoids face +z
-const FACE_X = new Set(['lobo', 'besouro']);
+const FACE_X = new Set(FACE_X_TYPES);
 function faceTarget(e, tx, tz) {
   const dx = tx - e.pos.x, dz = tz - e.pos.z;
   e.model.group.rotation.y = FACE_X.has(e.type) ? Math.atan2(dx, dz) - Math.PI / 2 : Math.atan2(dx, dz);
@@ -1206,6 +1225,59 @@ function updateNpc(n, dt) {
   }
 }
 
+// ============================================================ multiplayer
+const NET_NAME = 'Galo-' + Math.floor(100 + Math.random() * 900);
+const remoteHeroes = new Map();
+
+function ensureRemoteHero(id) {
+  let r = remoteHeroes.get(id);
+  if (r) return r;
+  const model = makeHero();
+  scene.add(model.group);
+  const plate = document.createElement('div');
+  plate.className = 'plate';
+  plate.innerHTML = `<div class="pname" style="color:#7fd0ff"></div>`;
+  $('plates').appendChild(plate);
+  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false };
+  remoteHeroes.set(id, r);
+  return r;
+}
+
+function updateRemoteHeroes(dt) {
+  for (const [id, s] of net.remotes) {
+    const r = ensureRemoteHero(id);
+    if (!r.init) { r.x = s.x; r.z = s.z; r.ry = s.ry; r.init = true; }
+    // interpolação simples até o último estado recebido
+    const k = Math.min(1, dt * 10);
+    r.x += (s.x - r.x) * k;
+    r.z += (s.z - r.z) * k;
+    let dr = s.ry - r.ry;
+    while (dr > Math.PI) dr -= Math.PI * 2;
+    while (dr < -Math.PI) dr += Math.PI * 2;
+    r.ry += dr * k;
+    const y = terrainHeight(r.x, r.z);
+    r.model.group.position.set(r.x, y, r.z);
+    r.model.group.rotation.y = r.ry;
+    r.model.halo.visible = !!s.halo;
+    r.model.horns.visible = !!s.horns;
+    if (s.moving) r.walkT += dt * 9; else r.walkT *= 0.8;
+    const sw = Math.sin(r.walkT) * 0.65;
+    r.model.legL.rotation.x = sw;
+    r.model.legR.rotation.x = -sw;
+    r.model.armL.rotation.x = -sw * 0.7;
+    r.model.armR.rotation.x = sw * 0.7;
+    r.nameEl.textContent = `${s.name} [${s.lvl}]`;
+  }
+  // remove quem saiu
+  for (const [id, r] of remoteHeroes) {
+    if (!net.remotes.has(id)) {
+      scene.remove(r.model.group);
+      r.plate.remove();
+      remoteHeroes.delete(id);
+    }
+  }
+}
+
 // ============================================================ main loop
 const clock = new THREE.Clock();
 const tmpV = new THREE.Vector3();
@@ -1245,6 +1317,7 @@ function tick() {
     } else {
       player.walkT *= 0.8;
     }
+    player.moving = ml > 0;
     const groundY = terrainHeight(player.pos.x, player.pos.z);
     if (keys.Space && player.onGround) { player.vy = 8.5; player.onGround = false; }
     if (!player.onGround) {
@@ -1291,6 +1364,7 @@ function tick() {
     for (const n of npcs) updateNpc(n, dt);
     guildmasterHints(dt);
     updateOrbs(dt);
+    updateRemoteHeroes(dt);
   }
 
   // ---------- projectiles ----------
@@ -1409,6 +1483,16 @@ function tick() {
     n.plate.style.left = `${(tmpV.x * 0.5 + 0.5) * innerWidth}px`;
     n.plate.style.top = `${(-tmpV.y * 0.5 + 0.5) * innerHeight}px`;
   }
+  for (const [, r] of remoteHeroes) {
+    const p = r.model.group.position;
+    tmpV.set(p.x, p.y + 3.0, p.z);
+    const dCam = tmpV.distanceTo(camera.position);
+    tmpV.project(camera);
+    if (tmpV.z > 1 || dCam > 90) { r.plate.style.display = 'none'; continue; }
+    r.plate.style.display = '';
+    r.plate.style.left = `${(tmpV.x * 0.5 + 0.5) * innerWidth}px`;
+    r.plate.style.top = `${(-tmpV.y * 0.5 + 0.5) * innerHeight}px`;
+  }
 
   // ---------- floating text ----------
   for (let i = dmgTexts.length - 1; i >= 0; i--) {
@@ -1436,7 +1520,7 @@ addEventListener('beforeunload', saveGame);
 
 // debug / experimental hooks
 window.FABLE = {
-  player, quests, enemies, npcs, chickens, SKY,
+  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

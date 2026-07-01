@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core.js';
+import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core';
 
 // ============================================================ terrain
 export const WORLD_R = 190;
