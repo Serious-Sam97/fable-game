@@ -1,43 +1,9 @@
 import * as THREE from 'three';
 import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core';
+import { WORLD_R, LAKE, BANDIT_CAMP, ORCHARD, DARK_FOREST, terrainHeight, distToPath } from '../shared/terrain';
 
-// ============================================================ terrain
-export const WORLD_R = 190;
-export const LAKE = { x: 70, z: -90, r: 26, waterY: -2.4 };
-
-export function terrainHeight(x, z) {
-  let h = (vnoise(x * 0.015, z * 0.015) - 0.5) * 18
-        + (vnoise(x * 0.05 + 7.3, z * 0.05 + 7.3) - 0.5) * 4
-        + (vnoise(x * 0.14 + 21, z * 0.14 + 21) - 0.5) * 1.2;
-  // flatten the village
-  const dV = Math.hypot(x, z);
-  const tV = smoothstep(14, 46, dV);
-  h *= 0.1 + 0.9 * tV;
-  // lake bowl
-  const dL = Math.hypot(x - LAKE.x, z - LAKE.z);
-  h -= 9 * smoothstep(LAKE.r + 8, LAKE.r - 14, dL);
-  return h;
-}
-
-// dirt paths (village → orchard / bandit camp / lake / dark forest)
-const PATHS = [
-  [[0, 0], [28, 10], [55, 25]],
-  [[0, 0], [-30, -25], [-70, -60]],
-  [[0, 0], [25, -40], [58, -75]],
-  [[0, 0], [-8, 45], [-15, 95]],
-];
-function distToSeg(px, pz, ax, az, bx, bz) {
-  const dx = bx - ax, dz = bz - az;
-  const t = clamp(((px - ax) * dx + (pz - az) * dz) / (dx * dx + dz * dz), 0, 1);
-  return Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
-}
-export function distToPath(x, z) {
-  let d = 1e9;
-  for (const p of PATHS)
-    for (let i = 0; i < p.length - 1; i++)
-      d = Math.min(d, distToSeg(x, z, p[i][0], p[i][1], p[i + 1][0], p[i + 1][1]));
-  return d;
-}
+// terreno é compartilhado com o servidor (shared/terrain); re-exportado para o resto do cliente
+export { WORLD_R, LAKE, BANDIT_CAMP, ORCHARD, DARK_FOREST, terrainHeight, distToPath };
 
 // ============================================================ build
 const windowMats = [];   // glow at night
@@ -458,7 +424,6 @@ function buildVillage() {
 }
 
 // ------------------------------------------------ bandit camp
-export const BANDIT_CAMP = { x: -70, z: -60 };
 function buildBanditCamp() {
   const { x: cx, z: cz } = BANDIT_CAMP;
   for (let i = 0; i < 3; i++) {
@@ -488,7 +453,6 @@ function buildBanditCamp() {
 }
 
 // ------------------------------------------------ orchard (beetles)
-export const ORCHARD = { x: 55, z: 25 };
 function buildOrchard() {
   for (let i = 0; i < 9; i++) {
     const x = ORCHARD.x - 12 + (i % 3) * 12 + (rnd(i, 90) - 0.5) * 5;
@@ -499,7 +463,6 @@ function buildOrchard() {
 }
 
 // ------------------------------------------------ dark forest (hobbes + balverine)
-export const DARK_FOREST = { x: -15, z: 95 };
 function buildDarkForest() {
   for (let i = 0; i < 34; i++) {
     const x = DARK_FOREST.x + (rnd(i, 95) - 0.5) * 70;

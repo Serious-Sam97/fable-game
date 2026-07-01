@@ -12,7 +12,8 @@ import {
   makeBeast, makeBeetle, makeChicken, makeTextSprite,
 } from './models';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
-import { connectNet, net } from './net';
+import { connectNet, net, sendMsg, drainEvents } from './net';
+import { EnemySim } from '../shared/sim/enemies';
 
 buildWorld();
 
@@ -112,51 +113,125 @@ const MAKERS = {
   balverine: () => makeBalverine(),
 };
 
-function spawnEnemy(typeKey, x, z, extra = {}) {
-  const def = DEFS[typeKey];
-  const model = MAKERS[typeKey]();
+// simulação local — autoritativa apenas OFFLINE; online o servidor é a verdade
+const localSim = new EnemySim();
+const enemyViews = new Map(); // id → view (modelo 3D + plate espelhando a sim)
+const myPid = () => (net.connected ? net.id : 0);
+// beasts olham por +X na malha; a sim guarda o ângulo puro e o cliente compensa
+const FACE_X = new Set(FACE_X_TYPES);
+
+function ensureEnemyView(s) {
+  let v = enemyViews.get(s.id);
+  if (v) return v;
+  const def = DEFS[s.type];
+  const model = MAKERS[s.type]();
   scene.add(model.group);
   const plate = document.createElement('div');
   plate.className = 'plate';
   plate.innerHTML = `<div class="pname" style="color:#ff6a6a">${def.name}</div><div class="phpbar"><div class="phpfill"></div></div>`;
   $('plates').appendChild(plate);
-  const e = {
-    type: typeKey, def, model,
-    home: new THREE.Vector3(x, 0, z),
-    pos: new THREE.Vector3(x, terrainHeight(x, z), z),
-    hp: def.hp, maxHp: def.hp,
-    state: 'idle', wanderTarget: null, wanderTimer: rnd(x, z) * 4,
-    attackTimer: 0, deadTimer: 0, walkT: 0, swingT: 0,
-    knock: new THREE.Vector3(), leapCd: 0, leapT: 0,
+  v = {
+    id: s.id, type: s.type, def, model,
+    pos: new THREE.Vector3(s.x, terrainHeight(s.x, s.z), s.z),
+    ry: s.ry, hp: s.hp, maxHp: s.maxHp,
+    state: s.state, walkT: 0, swingT: 0, deadTimer: 0,
+    isLeader: s.type === 'chefe',
     plate, plateFill: plate.querySelector('.phpfill'), plateName: plate.querySelector('.pname'),
-    ...extra,
   };
-  e.model.group.position.copy(e.pos);
-  enemies.push(e);
-  return e;
+  enemyViews.set(s.id, v);
+  return v;
 }
 
-// spawns
-for (let i = 0; i < 10; i++) {
-  const a = (i / 10) * Math.PI * 2;
-  spawnEnemy('besouro', ORCHARD.x + Math.cos(a) * (5 + rnd(i, 210) * 12), ORCHARD.z + Math.sin(a) * (5 + rnd(i, 211) * 12));
+function syncEnemies(dt) {
+  const list = net.connected ? net.enemies : localSim.serialize();
+  const seen = new Set();
+  for (const s of list) {
+    seen.add(s.id);
+    const v = ensureEnemyView(s);
+    if (net.connected) {
+      // interpolação até o último snapshot do servidor
+      const k = Math.min(1, dt * 12);
+      v.pos.x += (s.x - v.pos.x) * k;
+      v.pos.z += (s.z - v.pos.z) * k;
+      let dr = s.ry - v.ry;
+      while (dr > Math.PI) dr -= Math.PI * 2;
+      while (dr < -Math.PI) dr += Math.PI * 2;
+      v.ry += dr * Math.min(1, dt * 10);
+    } else {
+      v.pos.x = s.x; v.pos.z = s.z; v.ry = s.ry;
+    }
+    v.hp = s.hp; v.maxHp = s.maxHp;
+    v.state = s.state;
+    v.walkT = s.walkT;
+    v.pos.y = terrainHeight(v.pos.x, v.pos.z) + (s.state === 'leap' ? Math.sin(Math.min(1, s.leapK) * Math.PI) * 4.5 : 0);
+    v.model.group.position.copy(v.pos);
+    v.model.group.rotation.y = v.ry - (FACE_X.has(v.type) ? Math.PI / 2 : 0);
+    if (s.state === 'dead') {
+      v.deadTimer += dt;
+      v.model.group.rotation.z = Math.min(Math.PI / 2, v.deadTimer * 4);
+    } else {
+      v.deadTimer = 0;
+      v.model.group.rotation.z = 0;
+    }
+    v.model.group.rotation.x = s.state === 'surrender' ? 0.5 : 0;
+    if (s.state === 'surrender') v.plateName.style.color = '#ffe07a';
+    const ls = Math.sin(v.walkT) * 0.6;
+    if (v.model.legs) {
+      for (let i = 0; i < v.model.legs.length; i++) v.model.legs[i].rotation.x = i % 2 ? ls : -ls;
+    }
+    if (v.model.armR) {
+      if (v.swingT > 0) { v.swingT -= dt; v.model.armR.rotation.x = -2.2 * (v.swingT / 0.3); }
+      else v.model.armR.rotation.x = ls * 0.5;
+      if (v.model.armL) v.model.armL.rotation.x = -ls * 0.5;
+    }
+  }
+  for (const [id, v] of enemyViews) {
+    if (!seen.has(id)) {
+      scene.remove(v.model.group);
+      v.plate.remove();
+      enemyViews.delete(id);
+      if (target === v) setTarget(null);
+    }
+  }
+  enemies.length = 0;
+  for (const v of enemyViews.values()) enemies.push(v);
 }
-for (let i = 0; i < 5; i++) {
-  const a = (i / 5) * Math.PI * 2;
-  spawnEnemy('lobo', 95 + Math.cos(a) * (6 + rnd(i, 212) * 12), 55 + Math.sin(a) * (6 + rnd(i, 213) * 12));
+
+function processSimEvents() {
+  const evs = net.connected ? drainEvents() : localSim.drainEvents();
+  for (const ev of evs) {
+    const v = enemyViews.get(ev.id);
+    switch (ev.t) {
+      case 'aggro':
+        if (v) floatText(v.pos, '!', '#ff6a6a', 20);
+        if (v && v.type === 'balverine') { noiseBurst(0.5, 0.09); beep(90, 0.7, 'sawtooth', 0.08, -30); }
+        break;
+      case 'eatk':
+        if (v) v.swingT = 0.3;
+        if (ev.pid === myPid()) damagePlayer(ev.dmg);
+        break;
+      case 'eleap':
+        if (v) floatText(v.pos, '🐺 SALTO!', '#ff8a5a', 16);
+        break;
+      case 'eland':
+        if (v) { ringEffect(v.pos, 0x8a4a4a, 5); noiseBurst(0.2, 0.07); shake = 0.4; }
+        if (ev.pid === myPid() && ev.dmg > 0) damagePlayer(ev.dmg);
+        break;
+      case 'edie':
+        if (v) onEnemyDeath(v, ev.killerPid === myPid());
+        break;
+    }
+  }
 }
-for (let i = 0; i < 6; i++) {
-  const a = (i / 6) * Math.PI * 2;
-  spawnEnemy('bandido', BANDIT_CAMP.x + Math.cos(a) * (5 + rnd(i, 214) * 10), BANDIT_CAMP.z + Math.sin(a) * (5 + rnd(i, 215) * 10));
+
+function getLeader() { return enemies.find((e) => e.isLeader); }
+function requestLeaderSurrender() {
+  if (net.connected) sendMsg({ t: 'surrender' });
+  else localSim.surrenderLeader();
 }
-let leader = spawnEnemy('chefe', BANDIT_CAMP.x, BANDIT_CAMP.z + 3, { isLeader: true });
-for (let i = 0; i < 6; i++) {
-  const a = (i / 6) * Math.PI * 2;
-  spawnEnemy('hobbe', DARK_FOREST.x + Math.cos(a) * (6 + rnd(i, 216) * 12), DARK_FOREST.z - 15 + Math.sin(a) * (6 + rnd(i, 217) * 10));
-}
-let balverine = null;
-function spawnBalverine() {
-  balverine = spawnEnemy('balverine', DARK_FOREST.x, DARK_FOREST.z + 12);
+function requestSpawnBalverine() {
+  if (net.connected) sendMsg({ t: 'spawnBalverine' });
+  else localSim.spawnBalverine();
   noiseBurst(0.6, 0.1);
   beep(70, 0.9, 'sawtooth', 0.09, -25);
   centerMsg('Um uivo ecoa pelas colinas…', 'O Balverine desperta na Floresta Sombria');
@@ -276,7 +351,7 @@ function dmgMult() {
   return (1 + Math.min(player.mult, 25) * 0.03) * (player.luckCharm ? 1.08 : 1);
 }
 function damageEnemy(e, dmg, { fromPlayer = true } = {}) {
-  if (e.state === 'dead' || e.state === 'surrender') return;
+  if (e.state === 'dead' || e.state === 'surrender' || e.state === 'flee') return;
   if (fromPlayer) {
     dmg = Math.round(dmg * dmgMult());
     player.mult = Math.min(99, player.mult + 1);
@@ -284,26 +359,29 @@ function damageEnemy(e, dmg, { fromPlayer = true } = {}) {
     const el = $('mult');
     el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
   }
-  e.hp -= dmg;
   player.lastCombat = time;
   floatText(e.pos, dmg, '#ffd24a', 18);
   for (const m of e.model.mats) m.emissive.setHex(0x661111);
   setTimeout(() => { for (const m of e.model.mats) m.emissive.setHex(0x000000); }, 120);
-  if (e.state === 'idle' || e.state === 'return') e.state = 'chase';
-  if (e.hp <= 0) killEnemy(e);
+  // o dano é aplicado pela simulação: servidor quando online, localSim quando solo
+  if (net.connected) sendMsg({ t: 'hit', id: e.id, dmg });
+  else localSim.applyDamage(e.id, dmg, 0);
 }
 
-function killEnemy(e) {
-  e.state = 'dead';
-  e.hp = 0;
-  e.deadTimer = 0;
-  e.plate.style.display = 'none';
+// chamado via evento 'edie' da simulação; `mine` = fui eu quem matou
+function onEnemyDeath(e, mine) {
   if (target === e) setTarget(null);
+  beep(120, 0.3, 'triangle', 0.06, -60);
+  if (e.isLeader) {
+    quests.q2.leaderResolved = true;
+    quests.q2.choice = quests.q2.choice || 'killed';
+    checkQ2Done(); updateQuestUI(); saveGame();
+  }
+  if (!mine) return; // loot e crédito de missão são de quem matou
   player.kills++;
   const gold = e.def.gold[0] + Math.round(Math.random() * (e.def.gold[1] - e.def.gold[0]));
   dropOrbs(e.pos, e.def.xp, gold);
   if (e.def.renown) gainRenown(e.def.renown);
-  beep(120, 0.3, 'triangle', 0.06, -60);
 
   // quest credit
   if (e.type === 'besouro' && quests.q1.state === 'active' && quests.q1.count < quests.q1.goal) {
@@ -315,16 +393,13 @@ function killEnemy(e) {
   if (e.type === 'bandido' && quests.q2.state === 'active' && quests.q2.count < quests.q2.goal) {
     quests.q2.count++;
     floatText(e.pos, `Bandidos: ${quests.q2.count}/${quests.q2.goal}`, '#8fd0ff', 13);
-    if (quests.q2.count >= quests.q2.goal && leader && leader.state !== 'dead') {
-      leader.state = 'surrender';
-      leader.plateName.style.color = '#ffe07a';
-      centerMsg('O chefe dos bandidos se rende!', 'Aproxime-se e decida o destino dele');
+    if (quests.q2.count >= quests.q2.goal) {
+      const ldr = getLeader();
+      if (ldr && ldr.state !== 'dead') {
+        requestLeaderSurrender();
+        centerMsg('O chefe dos bandidos se rende!', 'Aproxime-se e decida o destino dele');
+      }
     }
-    checkQ2Done(); updateQuestUI(); saveGame();
-  }
-  if (e.isLeader) {
-    quests.q2.leaderResolved = true;
-    quests.q2.choice = quests.q2.choice || 'killed';
     checkQ2Done(); updateQuestUI(); saveGame();
   }
   if (e.type === 'balverine' && quests.q3.state === 'active') {
@@ -430,7 +505,8 @@ const abilities = [
         if (d < 8) {
           damageEnemy(e, Math.round(8 + player.level * 2));
           const dir = e.pos.clone().sub(player.pos).setY(0).normalize();
-          e.knock.addScaledVector(dir, 16);
+          if (net.connected) sendMsg({ t: 'knock', id: e.id, kx: dir.x * 16, kz: dir.z * 16 });
+          else localSim.knock(e.id, dir.x * 16, dir.z * 16);
           hit++;
         }
       }
@@ -440,7 +516,9 @@ const abilities = [
     } },
   { name: 'Tempo Lento', range: 0, cost: 35, cd: 22, needTarget: false,
     use() {
-      player.slowT = 6;
+      player.slowT = 6; // overlay visual local
+      if (net.connected) sendMsg({ t: 'slow' });
+      else localSim.castSlow();
       beep(50, 1.2, 'sine', 0.09, 40);
       floatText(player.pos, '⏳ O tempo desacelera…', '#9ad0ff', 16);
     } },
@@ -592,7 +670,7 @@ function talkTo(npc) {
       showDialog('A Fera da Floresta',
         'Há relatos de um Balverine ancião rondando a Floresta Sombria ao sul. Poucos heróis sobrevivem a um balverine… mas você não é como os outros. Cace-o.',
         'Recompensa: 500 XP, 250 ouro, +25 renome',
-        [{ label: 'Aceitar missão', cb: () => { quests.q3.state = 'active'; spawnBalverine(); updateQuestUI(); saveGame(); } }, closeBtn]);
+        [{ label: 'Aceitar missão', cb: () => { quests.q3.state = 'active'; requestSpawnBalverine(); updateQuestUI(); saveGame(); } }, closeBtn]);
     } else if (quests.q3.state === 'active') {
       showDialog('Mestre da Guilda', 'O Balverine o aguarda na Floresta Sombria, ao sul. Vá à noite, se tiver coragem…', '', [closeBtn]);
     } else if (quests.q3.state === 'done') {
@@ -670,8 +748,8 @@ function confrontLeader() {
         changeMorality(20);
         quests.q2.leaderResolved = true; quests.q2.choice = 'spared';
         toast('Você poupou o Rufião');
-        // leader runs away
-        leader.state = 'flee'; leader.plate.style.display = 'none';
+        if (net.connected) sendMsg({ t: 'leaderResolve', spare: true });
+        else localSim.resolveLeader(true, 0);
         checkQ2Done(); updateQuestUI(); saveGame();
       } },
       { label: '😈 Executar', cls: 'evil', cb: () => {
@@ -679,7 +757,8 @@ function confrontLeader() {
         quests.q2.choice = 'executed';
         player.gold += 50;
         toast('+50 🪙 dos bolsos do Rufião');
-        killEnemy(leader);
+        if (net.connected) sendMsg({ t: 'leaderResolve', spare: false });
+        else localSim.resolveLeader(false, 0);
         saveGame();
       } },
     ]);
@@ -719,8 +798,9 @@ function nearestInteract() {
   for (const n of npcs) {
     consider(n.pos.distanceTo(player.pos), 5.5, `Falar com ${n.name}`, () => talkTo(n));
   }
-  if (leader && leader.state === 'surrender') {
-    consider(leader.pos.distanceTo(player.pos), 5, 'Decidir o destino do Rufião', confrontLeader);
+  const ldr = getLeader();
+  if (ldr && ldr.state === 'surrender') {
+    consider(ldr.pos.distanceTo(player.pos), 5, 'Decidir o destino do Rufião', confrontLeader);
   }
   return best;
 }
@@ -823,8 +903,9 @@ function doClick(e) {
       return;
     }
   }
-  if (leader && leader.state === 'surrender' && raycaster.intersectObject(leader.model.group, true).length) {
-    if (player.pos.distanceTo(leader.pos) < 6) confrontLeader();
+  const ldr = getLeader();
+  if (ldr && ldr.state === 'surrender' && raycaster.intersectObject(ldr.model.group, true).length) {
+    if (player.pos.distanceTo(ldr.pos) < 6) confrontLeader();
     return;
   }
   let best = null, bestD = Infinity;
@@ -845,9 +926,7 @@ function playerDie() {
     player.pos.set(0, terrainHeight(0, 10), 10);
     player.hp = player.maxHp; player.will = player.maxWill;
     player.dead = false; player.mult = 0;
-    for (const e of enemies) {
-      if (e.state === 'chase' || e.state === 'attack' || e.state === 'leap') { e.state = 'return'; e.hp = e.maxHp; }
-    }
+    // a simulação vê o herói morto (flag dead) e os inimigos voltam pra casa sozinhos
     $('deathOverlay').style.display = 'none';
   }, 3500);
 }
@@ -886,10 +965,8 @@ function loadGame() {
   Object.assign(quests.q1, data.q1);
   Object.assign(quests.q2, data.q2);
   Object.assign(quests.q3, data.q3);
-  if (quests.q2.state === 'completed' || quests.q2.choice) {
-    if (leader) { leader.state = 'dead'; leader.model.group.visible = false; leader.plate.style.display = 'none'; }
-  }
-  if (quests.q3.state === 'active') spawnBalverine();
+  if (!net.connected && (quests.q2.state === 'completed' || quests.q2.choice)) localSim.removeLeader();
+  if (quests.q3.state === 'active') requestSpawnBalverine();
   updateMoralityVisuals();
   updateQuestUI();
   return true;
@@ -1003,142 +1080,7 @@ function guildmasterHints(dt) {
   }
 }
 
-// ============================================================ enemy AI
-function moveEnemyToward(e, targetPos, speed, dt) {
-  const dx = targetPos.x - e.pos.x, dz = targetPos.z - e.pos.z;
-  const d = Math.hypot(dx, dz);
-  if (d < 0.3) return;
-  e.pos.x += (dx / d) * speed * dt;
-  e.pos.z += (dz / d) * speed * dt;
-  e.model.group.rotation.y = FACE_X.has(e.type)
-    ? Math.atan2(dx, dz) - Math.PI / 2
-    : Math.atan2(dx, dz);
-  e.walkT += dt * speed * 2.2;
-}
-// beasts face +x, humanoids face +z
-const FACE_X = new Set(FACE_X_TYPES);
-function faceTarget(e, tx, tz) {
-  const dx = tx - e.pos.x, dz = tz - e.pos.z;
-  e.model.group.rotation.y = FACE_X.has(e.type) ? Math.atan2(dx, dz) - Math.PI / 2 : Math.atan2(dx, dz);
-}
-
-function updateEnemy(e, dt, eDt) {
-  if (e.state === 'dead') {
-    e.deadTimer += dt;
-    e.model.group.rotation.z = Math.min(Math.PI / 2, e.deadTimer * 4);
-    if (e.def.respawn && e.deadTimer > e.def.respawn) {
-      e.state = 'idle'; e.hp = e.maxHp;
-      e.pos.set(e.home.x, terrainHeight(e.home.x, e.home.z), e.home.z);
-      e.model.group.rotation.z = 0;
-      e.plate.style.display = '';
-    }
-    e.model.group.position.copy(e.pos);
-    return;
-  }
-  if (e.state === 'surrender') {
-    e.model.group.rotation.x = 0.5; // kneel-ish
-    faceTarget(e, player.pos.x, player.pos.z);
-    e.model.group.position.copy(e.pos);
-    return;
-  }
-  if (e.state === 'flee') {
-    const away = e.pos.clone().sub(player.pos).setY(0).normalize();
-    e.pos.addScaledVector(away, 7 * dt);
-    e.walkT += dt * 12;
-    e.model.group.rotation.x = 0;
-    faceTarget(e, e.pos.x + away.x, e.pos.z + away.z);
-    if (e.pos.distanceTo(player.pos) > 60) { e.model.group.visible = false; }
-    e.pos.y = terrainHeight(e.pos.x, e.pos.z);
-    e.model.group.position.copy(e.pos);
-    return;
-  }
-
-  // knockback
-  if (e.knock.lengthSq() > 0.01) {
-    e.pos.addScaledVector(e.knock, eDt);
-    e.knock.multiplyScalar(Math.max(0, 1 - 5 * eDt));
-  }
-
-  const dPlayer = Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z);
-  const dHome = Math.hypot(e.home.x - e.pos.x, e.home.z - e.pos.z);
-  const aggroR = e.def.aggro * (SKY.nightF > 0.5 && (e.type === 'lobo' || e.type === 'hobbe' || e.type === 'balverine') ? 1.5 : 1);
-
-  if (e.state === 'leap') {
-    e.leapT += eDt / 0.7;
-    const k = Math.min(1, e.leapT);
-    e.pos.lerpVectors(e.leapFrom, e.leapTo, k);
-    e.pos.y = terrainHeight(e.pos.x, e.pos.z) + Math.sin(k * Math.PI) * 4.5;
-    e.model.group.position.copy(e.pos);
-    if (k >= 1) {
-      e.state = 'chase';
-      shake = 0.4;
-      ringEffect(e.pos, 0x8a4a4a, 5);
-      noiseBurst(0.2, 0.07);
-      if (!player.dead && Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z) < 3.5) {
-        damagePlayer(Math.round(e.def.dmg[0] + Math.random() * (e.def.dmg[1] - e.def.dmg[0])));
-      }
-    }
-    return;
-  }
-
-  if (e.state === 'idle') {
-    if (!player.dead && dPlayer < aggroR) {
-      e.state = 'chase';
-      floatText(e.pos, '!', '#ff6a6a', 20);
-      if (e.type === 'balverine') { noiseBurst(0.5, 0.09); beep(90, 0.7, 'sawtooth', 0.08, -30); }
-    } else {
-      e.wanderTimer -= dt;
-      if (e.wanderTimer <= 0) {
-        e.wanderTimer = 3 + Math.random() * 5;
-        const a = Math.random() * Math.PI * 2, r = Math.random() * 9;
-        e.wanderTarget = new THREE.Vector3(e.home.x + Math.cos(a) * r, 0, e.home.z + Math.sin(a) * r);
-      }
-      if (e.wanderTarget) moveEnemyToward(e, e.wanderTarget, e.def.speed * 0.35, eDt);
-    }
-  } else if (e.state === 'chase' || e.state === 'attack') {
-    if (player.dead || dHome > 55) {
-      e.state = 'return'; e.hp = e.maxHp;
-    } else if (e.type === 'balverine' && dPlayer > 6 && dPlayer < 16 && e.leapCd <= 0) {
-      e.state = 'leap';
-      e.leapT = 0; e.leapCd = 7;
-      e.leapFrom = e.pos.clone();
-      e.leapTo = player.pos.clone();
-      floatText(e.pos, '🐺 SALTO!', '#ff8a5a', 16);
-    } else if (dPlayer > e.def.atkR) {
-      e.state = 'chase';
-      moveEnemyToward(e, player.pos, e.def.speed, eDt);
-    } else {
-      e.state = 'attack';
-      faceTarget(e, player.pos.x, player.pos.z);
-      e.attackTimer -= eDt;
-      if (e.attackTimer <= 0) {
-        e.attackTimer = e.def.atkCd;
-        e.swingT = 0.3;
-        damagePlayer(Math.round(e.def.dmg[0] + Math.random() * (e.def.dmg[1] - e.def.dmg[0])));
-      }
-    }
-  } else if (e.state === 'return') {
-    if (dHome < 1.5) { e.state = 'idle'; e.hp = e.maxHp; }
-    else moveEnemyToward(e, e.home, e.def.speed, eDt);
-  }
-  e.leapCd = Math.max(0, e.leapCd - dt);
-
-  e.pos.y = terrainHeight(e.pos.x, e.pos.z);
-  e.model.group.position.copy(e.pos);
-
-  // leg / arm animation
-  const ls = Math.sin(e.walkT) * 0.6;
-  if (e.model.legs) {
-    for (let i = 0; i < e.model.legs.length; i++) {
-      e.model.legs[i].rotation.x = i % 2 ? ls : -ls;
-    }
-  }
-  if (e.model.armR) {
-    if (e.swingT > 0) { e.swingT -= dt; e.model.armR.rotation.x = -2.2 * (e.swingT / 0.3); }
-    else e.model.armR.rotation.x = ls * 0.5;
-    if (e.model.armL) e.model.armL.rotation.x = -ls * 0.5;
-  }
-}
+// IA dos inimigos vive em shared/sim/enemies.ts (servidor online, localSim offline)
 
 // ============================================================ chicken AI
 function updateChicken(c, dt) {
@@ -1293,7 +1235,6 @@ setInterval(() => { if (document.hidden) tick(); }, 50);
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.05);
   time += dt;
-  const eDt = dt * (player.slowT > 0 ? 0.35 : 1);
 
   // ---------- player movement ----------
   if (started && !player.dead && dialog.style.display !== 'block') {
@@ -1356,10 +1297,15 @@ function tick() {
   $('slowfx').style.opacity = player.slowT > 0 ? 1 : 0;
 
   // ---------- world / entities ----------
+  if (net.connected && net.serverDayT !== null) SKY.dayT = net.serverDayT; // hora do mundo é do servidor
   updateSky(started ? dt : dt * 0.3, player.pos);
   updateWorld(time, dt, player.pos);
   if (started) {
-    for (const e of enemies) updateEnemy(e, dt, eDt);
+    if (!net.connected) {
+      localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead }], SKY.nightF);
+    }
+    syncEnemies(dt);
+    processSimEvents();
     for (const c of chickens) updateChicken(c, dt);
     for (const n of npcs) updateNpc(n, dt);
     guildmasterHints(dt);
@@ -1520,7 +1466,7 @@ addEventListener('beforeunload', saveGame);
 
 // debug / experimental hooks
 window.FABLE = {
-  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes,
+  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

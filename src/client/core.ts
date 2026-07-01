@@ -50,24 +50,9 @@ export const moon = new THREE.DirectionalLight(0x7a90d8, 0);
 scene.add(moon); scene.add(moon.target);
 
 // ============================================================ helpers
-export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-export const lerp = (a, b, t) => a + (b - a) * t;
-export const smoothstep = (a, b, v) => {
-  const t = clamp((v - a) / (b - a), 0, 1);
-  return t * t * (3 - 2 * t);
-};
-export function hash(x, z) {
-  const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453;
-  return s - Math.floor(s);
-}
-export function vnoise(x, z) {
-  const xi = Math.floor(x), zi = Math.floor(z);
-  const xf = x - xi, zf = z - zi;
-  const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
-  const a = hash(xi, zi), b = hash(xi + 1, zi), c = hash(xi, zi + 1), d = hash(xi + 1, zi + 1);
-  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-}
-export const rnd = (a, b) => hash(a * 3.7 + 11.3, b * 9.1 + 5.7);
+// matemática vive em shared/ (mesmo código no servidor); re-exportada para o cliente
+import { clamp, lerp, smoothstep } from '../shared/math';
+export * from '../shared/math';
 
 // ============================================================ day / night cycle
 export const SKY = {

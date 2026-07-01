@@ -17,15 +17,15 @@ Tudo que for construído antes da fundação de rede terá que ser reescrito. Po
 ## Fase 0 — Fundação Técnica ("de protótipo a projeto")
 *Pré-requisito de tudo. Sem isso, o projeto desmorona com o próprio peso.*
 
-- [ ] **`git init` + GitHub** — a pasta ainda não é um repositório; primeiro passo absoluto
-- [ ] **Vite + npm** — build, HMR, minificação, imports locais do Three.js (adeus unpkg)
-- [ ] **TypeScript** — essencial para compartilhar código de simulação entre cliente e servidor
-- [ ] **Refatorar para simulação determinística separada da renderização:**
-  - `sim/` — estado do mundo, entidades, combate, IA (roda no cliente E no servidor)
-  - `client/` — Three.js, UI, input, áudio (só no navegador)
-  - `shared/` — tipos, constantes, fórmulas de dano, defs de conteúdo
-- [ ] **Conteúdo data-driven** — inimigos, itens, habilidades, missões e NPCs definidos em
-      JSON/TS declarativo, não hardcoded (`defs/enemies.ts`, `defs/quests.ts`…)
+- [x] **`git init`** — feito (GitHub ainda pendente)
+- [x] **Vite + npm** — build, HMR, minificação, imports locais do Three.js (adeus unpkg)
+- [x] **TypeScript** — base migrada (modo leniente; tipagem estrita gradual)
+- [x] **Refatorar para simulação determinística separada da renderização:**
+  - `src/shared/sim/` — IA/combate dos inimigos roda no cliente E no servidor ✅
+  - `src/client/` — Three.js, UI, input, áudio ✅
+  - `src/shared/` — math, terrain, protocol, defs ✅
+- [ ] **Conteúdo data-driven** — inimigos ✅ (`shared/defs/enemies.ts`); falta itens,
+      habilidades, missões e NPCs
 - [ ] **Event bus** — sistemas conversam por eventos (`enemy:died`, `quest:progress`),
       não por chamadas diretas; crucial para rede e para plugar sistemas novos
 - [ ] **Save versionado** — `{ version: N }` + migrações, para nunca quebrar saves antigos
@@ -41,9 +41,10 @@ e conteúdo em arquivos de definição.
 *A fase mais difícil e mais importante. Meta: 2–8 jogadores no mesmo mundo.*
 
 ### 1a. Servidor autoritativo
-- [ ] **Node.js + TypeScript + WebSocket** (`ws` ou uWebSockets.js) rodando a `sim/`
-      compartilhada a 20–30 ticks/s — o servidor é a verdade; o cliente só renderiza e prevê
-- [ ] IA, combate, loot, física de jogo e RNG **só no servidor** (anti-cheat de graça)
+- [x] **Node.js + TypeScript + WebSocket** rodando a sim compartilhada a 30 ticks/s —
+      inimigos e hora do mundo são do servidor; cliente cai para sim local quando offline
+- [ ] IA ✅ / hora do mundo ✅; falta: validar dano/alcance/cooldown no servidor
+      (hoje o cliente reporta o dano — TODO marcado no protocolo)
 - [ ] **Hospedagem caseira:** no ROG Strix G16 (CachyOS) via **Tailscale** — amigos entram
       pela tailnet sem abrir porta; depois `tailscale funnel` ou VPS para público
 - [ ] Persistência: **SQLite** (contas, personagens, estado do mundo) — Postgres só se crescer

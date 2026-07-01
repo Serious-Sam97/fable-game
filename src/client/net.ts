@@ -1,7 +1,8 @@
-// Cliente de rede — conecta ao servidor Fable e sincroniza heróis.
-// Se o servidor não estiver rodando, o jogo segue solo em silêncio.
+// Cliente de rede — conecta ao servidor Fable e sincroniza heróis + inimigos.
+// Se o servidor não estiver rodando, o jogo segue solo em silêncio (sim local).
 import { NET_PORT, CLIENT_SEND_HZ } from '../shared/protocol';
-import type { PlayerState } from '../shared/protocol';
+import type { PlayerState, ClientMsg } from '../shared/protocol';
+import type { EnemySnap, SimEvent } from '../shared/sim/enemies';
 
 export interface RemotePlayer extends PlayerState {
   id: number;
@@ -12,16 +13,33 @@ interface NetState {
   connected: boolean;
   /** último snapshot de heróis remotos (sem o próprio) */
   remotes: Map<number, RemotePlayer>;
+  /** último snapshot de inimigos vindo do servidor */
+  enemies: EnemySnap[];
+  /** eventos de simulação acumulados desde o último drain */
+  events: SimEvent[];
+  /** hora do mundo do servidor (dayT) — null até o primeiro snap */
+  serverDayT: number | null;
 }
 
-export const net: NetState = { id: 0, connected: false, remotes: new Map() };
+export const net: NetState = {
+  id: 0, connected: false, remotes: new Map(),
+  enemies: [], events: [], serverDayT: null,
+};
 
 let ws: WebSocket | null = null;
 let sendTimer: ReturnType<typeof setInterval> | null = null;
-let onConnect: ((id: number) => void) | null = null;
+
+export function sendMsg(m: ClientMsg) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(m));
+}
+
+export function drainEvents(): SimEvent[] {
+  const ev = net.events;
+  net.events = [];
+  return ev;
+}
 
 export function connectNet(getState: () => PlayerState, onConnectCb?: (id: number) => void) {
-  onConnect = onConnectCb ?? null;
   const open = () => {
     try {
       ws = new WebSocket(`ws://${location.hostname}:${NET_PORT}`);
@@ -31,19 +49,18 @@ export function connectNet(getState: () => PlayerState, onConnectCb?: (id: numbe
     ws.onopen = () => {
       net.connected = true;
       if (sendTimer) clearInterval(sendTimer);
-      sendTimer = setInterval(() => {
-        if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify({ t: 'state', s: getState() }));
-        }
-      }, 1000 / CLIENT_SEND_HZ);
+      sendTimer = setInterval(() => sendMsg({ t: 'state', s: getState() }), 1000 / CLIENT_SEND_HZ);
     };
     ws.onmessage = (ev) => {
       let m: any;
       try { m = JSON.parse(ev.data); } catch { return; }
       if (m.t === 'welcome') {
         net.id = m.id;
-        onConnect?.(m.id);
+        onConnectCb?.(m.id);
       } else if (m.t === 'snap') {
+        net.serverDayT = m.dayT;
+        net.enemies = m.enemies;
+        if (m.events.length) net.events.push(...m.events);
         const seen = new Set<number>();
         for (const p of m.players) {
           if (p.id === net.id) continue;
@@ -59,6 +76,9 @@ export function connectNet(getState: () => PlayerState, onConnectCb?: (id: numbe
       const was = net.connected;
       net.connected = false;
       net.remotes.clear();
+      net.enemies = [];
+      net.events = [];
+      net.serverDayT = null;
       if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
       // tenta reconectar de tempos em tempos (servidor pode subir depois)
       setTimeout(open, was ? 2000 : 8000);
