@@ -10,11 +10,12 @@
     "server": "tsx server/server.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
+    "pg": "^8.22.0",
     "three": "^0.160.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.20.0",
     "@types/three": "^0.160.0",
     "tsx": "^4.22.4",
     "typescript": "~5.6.0",

@@ -1,0 +1,56 @@
+# Stack de desenvolvimento do Fable — tudo com hot reload:
+#   docker compose up
+#   web    → Vite dev server (HMR) em http://localhost:8471
+#   server → servidor autoritativo (tsx watch reinicia ao salvar) em ws://localhost:8787
+#   db     → Postgres 16 (persistência de personagens)
+# O código é montado por bind mount; node_modules vivem em volumes nomeados
+# (binários nativos de linux não se misturam com os do macOS).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fable
+      POSTGRES_PASSWORD: fable
+      POSTGRES_DB: fable
+    ports:
+      - "5434:5432"          # 5434 no host (5432/5433 já ocupadas por outros projetos)
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fable -d fable"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      DOCKER: "1"            # liga polling do watcher do Vite (eventos fs em bind mounts)
+    ports:
+      - "8471:8471"
+    volumes:
+      - .:/app
+      - web_modules:/app/node_modules
+
+  server:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npx tsx watch server/server.ts"
+    environment:
+      DATABASE_URL: postgres://fable:fable@db:5432/fable
+      CHOKIDAR_USEPOLLING: "1"   # eventos de fs não propagam em bind mounts — polling garante o restart
+    ports:
+      - "8787:8787"
+    volumes:
+      - .:/app
+      - server_modules:/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  web_modules:
+  server_modules:

@@ -1,10 +1,9 @@
-// Servidor Fable — Fase 1b: autoritativo para inimigos, hora do mundo e COMBATE.
+// Servidor Fable — autoritativo para inimigos, hora do mundo e combate (hot reload via tsx watch).
 // O cliente pede um cast; range, cooldown e dano são validados/calculados aqui
 // pelo mesmo CombatSim que roda no cliente em modo solo.
 // Rodar: npm run server  (porta 8787)
 import { createServer } from 'node:http';
-import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
+import pg from 'pg';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EnemySim } from '../src/shared/sim/enemies';
 import { CombatSim } from '../src/shared/sim/combat';
@@ -12,18 +11,30 @@ import { smoothstep } from '../src/shared/math';
 import { NET_PORT, SERVER_SNAP_HZ, SERVER_TICK_HZ, DAY_LEN, CHAT_MAX, NAME_MAX, SAVE_MAX_BYTES } from '../src/shared/protocol';
 import type { PlayerState, ClientMsg } from '../src/shared/protocol';
 
-// ---- persistência (personagens por nome; TODO Fase 2: contas com senha) ----
-const db = new Database(fileURLToPath(new URL('./fable.db', import.meta.url)));
-db.pragma('journal_mode = WAL');
-db.exec(`CREATE TABLE IF NOT EXISTS characters (
-  name TEXT PRIMARY KEY,
-  data TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-)`);
-const getChar = db.prepare('SELECT data FROM characters WHERE name = ?');
-const putChar = db.prepare(`INSERT INTO characters (name, data, updated_at) VALUES (?, ?, ?)
-  ON CONFLICT(name) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`);
-const delChar = db.prepare('DELETE FROM characters WHERE name = ?');
+// ---- persistência: Postgres (personagens por nome; TODO Fase 2: contas com senha) ----
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL ?? 'postgres://fable:fable@localhost:5434/fable',
+});
+pool.on('error', (e) => console.warn('pg pool:', e.message));
+let dbReady = false;
+(async function initDb() {
+  for (let i = 0; i < 45; i++) {
+    try {
+      await pool.query(`CREATE TABLE IF NOT EXISTS characters (
+        name TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+      dbReady = true;
+      console.log('Postgres conectado — persistência de personagens ativa');
+      return;
+    } catch {
+      if (i === 0) console.log('aguardando Postgres…');
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  console.warn('Postgres indisponível — servidor rodando SEM persistência');
+})();
 
 function cleanName(raw: unknown): string {
   return String(raw ?? '').replace(/[<>&"']/g, '').trim().slice(0, NAME_MAX) || 'Sem-Nome';
@@ -57,7 +68,7 @@ wss.on('connection', (ws, req) => {
   ws.send(JSON.stringify({ t: 'welcome', id }));
   console.log(`[+] herói #${id} conectou (${req.socket.remoteAddress}) — online: ${players.size}`);
 
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     let m: ClientMsg;
     try { m = JSON.parse(data.toString()); } catch { return; }
     const p = players.get(id);
@@ -73,19 +84,30 @@ wss.on('connection', (ws, req) => {
       case 'login': {
         const name = cleanName(m.name);
         p.charName = name;
-        if (m.fresh) delChar.run(name);
-        const row = getChar.get(name) as { data: string } | undefined;
         let data: unknown = null;
-        if (row) { try { data = JSON.parse(row.data); } catch { data = null; } }
+        if (dbReady) {
+          try {
+            if (m.fresh) {
+              await pool.query('DELETE FROM characters WHERE name = $1', [name]);
+            } else {
+              const r = await pool.query('SELECT data FROM characters WHERE name = $1', [name]);
+              data = r.rows[0]?.data ?? null;
+            }
+          } catch (e) { console.warn('db login falhou:', (e as Error).message); }
+        }
         ws.send(JSON.stringify({ t: 'loginOk', data }));
         console.log(`[${id}] login "${name}" — ${data ? 'personagem carregado' : 'novo personagem'}${m.fresh ? ' (reset)' : ''}`);
         break;
       }
       case 'save': {
-        if (!p.charName || typeof m.data !== 'object' || m.data === null) break;
+        if (!p.charName || typeof m.data !== 'object' || m.data === null || !dbReady) break;
         const json = JSON.stringify(m.data);
         if (json.length > SAVE_MAX_BYTES) break;
-        putChar.run(p.charName, json, Date.now());
+        pool.query(
+          `INSERT INTO characters (name, data, updated_at) VALUES ($1, $2::jsonb, now())
+           ON CONFLICT (name) DO UPDATE SET data = excluded.data, updated_at = now()`,
+          [p.charName, json],
+        ).catch((e) => console.warn('db save falhou:', e.message));
         break;
       }
       case 'cast': {
