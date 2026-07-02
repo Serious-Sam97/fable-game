@@ -356,6 +356,11 @@ function processSimEvents() {
         if (v) floatText(v.pos, '💫 atordoado', '#ffe9a8', 16);
         break;
       }
+      case 'ecombo': {
+        if (v) floatText(v.pos, '⚔️ COMBO!', '#ffd24a', 22);
+        if (ev.pid === myPid()) beep(520, 0.12, 'square', 0.06, 200);
+        break;
+      }
       case 'eheal': {
         const tv = enemyViews.get(ev.targetId);
         if (tv) floatText(tv.pos, '+' + ev.amount, '#6ee86e', 16);
@@ -2017,7 +2022,7 @@ addEventListener('beforeunload', saveGame);
 // debug / experimental hooks
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
-  gainDiscXP, addItem, updateHeroBody, learnTalent,
+  gainDiscXP, addItem, updateHeroBody, learnTalent, heroModel,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

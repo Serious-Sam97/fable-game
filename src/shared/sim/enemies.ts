@@ -26,7 +26,8 @@ export type SimEvent =
   // efeitos visuais de magia — emitidos pelo CombatSim, renderizados por todos os clientes
   | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
   | { t: 'boom'; x: number; z: number }
-  | { t: 'shock'; x: number; z: number };
+  | { t: 'shock'; x: number; z: number }
+  | { t: 'ecombo'; id: number; pid: number };  // 3º golpe do combo conectou
 
 export type EnemyState = 'idle' | 'chase' | 'attack' | 'return' | 'dead' | 'leap' | 'surrender' | 'flee';
 
@@ -47,6 +48,11 @@ export interface SimEnemy {
   targetPid: number | null;
   isLeader: boolean;
   stunT: number;
+  // queimadura (Bola de Fogo)
+  burnT: number;
+  burnTick: number;
+  burnDmg: number;
+  burnPid: number;
 }
 
 /** snapshot enxuto enviado aos clientes (e usado pelo view local no modo solo) */
@@ -111,6 +117,7 @@ export class EnemySim {
       leapCd: 0, leapT: 0,
       leapFromX: 0, leapFromZ: 0, leapToX: 0, leapToZ: 0,
       targetPid: null, isLeader, stunT: 0,
+      burnT: 0, burnTick: 0, burnDmg: 0, burnPid: 0,
     };
     this.enemies.set(e.id, e);
     return e;
@@ -238,6 +245,16 @@ export class EnemySim {
           e.knockX = e.knockZ = 0;
         }
         continue;
+      }
+      // queimadura: dano residual por segundo, creditado a quem lançou
+      if (e.burnT > 0) {
+        e.burnT -= dt;
+        e.burnTick -= dt;
+        if (e.burnTick <= 0) {
+          e.burnTick = 1;
+          this.applyDamage(e.id, e.burnDmg, e.burnPid, 'magic', false);
+          if (e.state === 'dead') continue; // queimou até morrer
+        }
       }
       if (e.state === 'surrender') {
         // ajoelhado, encara o herói vivo mais próximo
