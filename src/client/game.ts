@@ -9,7 +9,7 @@ import {
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel, applyArmorTo, makeTroll,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, applyArmorTo, makeTroll,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
@@ -209,8 +209,7 @@ function updateHeroBody() {
   const glow = wil >= 2;
   for (const t of heroModel.tattooMeshes) t.visible = glow;
   heroModel.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + wil * 0.18) : 0;
-  heroModel.weaponMount.clear();
-  heroModel.weaponMount.add(makeWeaponModel(player.equipped.wpn));
+  mountWeapon(heroModel, player.equipped.wpn);
   applyArmorTo(heroModel, {
     head: player.armor.head?.arm, chest: player.armor.chest?.arm,
     legs: player.armor.legs?.arm, boots: player.armor.boots?.arm,
@@ -1745,8 +1744,7 @@ function updateRemoteHeroes(dt) {
     // arma e físico dos outros heróis também aparecem
     if (r.wpnKey !== s.wpn) {
       r.wpnKey = s.wpn;
-      r.model.weaponMount.clear();
-      r.model.weaponMount.add(makeWeaponModel(s.wpn));
+      mountWeapon(r.model, s.wpn);
     }
     const armorSig = `${s.aHead}|${s.aChest}|${s.aLegs}|${s.aBoots}`;
     if (r.armorSig !== armorSig) {

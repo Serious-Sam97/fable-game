@@ -173,10 +173,9 @@ export function makeHero() {
   cape.position.set(0, 1.95, -0.06);
   g.add(cape);
 
-  // suporte de arma na mão direita
+  // suporte de arma na mão direita — a orientação é definida por mountWeapon()
   const weaponMount = new THREE.Group();
-  weaponMount.position.set(0, -0.86, 0.02);
-  weaponMount.rotation.x = Math.PI;
+  weaponMount.position.set(0, -0.86, 0.06);
   h.armR.add(weaponMount);
 
   // tatuagens arcanas de Vontade: anéis luminosos nos braços (bloom)
@@ -235,6 +234,17 @@ export function makeHero() {
     torso: h.torso, shL: h.shL, shR: h.shR,
     tattooMat, tattooMeshes, armorMounts,
   };
+}
+
+// encaixa a arma na mão com a postura certa por tipo:
+// melee em riste (à frente, levemente baixa), arco vertical, cajado com orbe erguido
+export function mountWeapon(model, key) {
+  const mount = model.weaponMount;
+  mount.clear();
+  mount.add(makeWeaponModel(key));
+  if (key.startsWith('arco')) mount.rotation.set(-0.12, Math.PI / 2, 0);
+  else if (key === 'cajado_arcano') mount.rotation.set(Math.PI, 0, 0);
+  else mount.rotation.set(-Math.PI / 2 - 0.35, 0, 0);
 }
 
 // ---------------------------------------------------------------- armor pieces
@@ -325,10 +335,11 @@ export function makeVillager({ robe = 0x2a4a7a, skin = 0xd8a878, hair = 0x888888
     h.head.add(hood);
   }
   if (staff) {
-    const st = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 2.1, 8), M(0x5a4028));
-    st.position.set(0, -0.35, 0.12);
+    // cajado plantado no chão, orbe na altura da cabeça
+    const st = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 1.9, 8), M(0x5a4028));
+    st.position.set(0, -0.84, 0.14);
     const orb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), basic(0x7fd0ff));
-    orb.position.set(0, 0.72, 0.12);
+    orb.position.set(0, 0.14, 0.14);
     h.armR.add(st, orb);
     h.armR.rotation.x = -0.25;
   }
@@ -358,17 +369,22 @@ export function makeBandit({ leader = false, archer = false } = {}) {
 
   if (archer) {
     const bow = makeWeaponModel('arco_cacador');
-    bow.position.set(0, -0.86, 0.02);
-    bow.rotation.x = Math.PI;
+    bow.position.set(0, -0.86, 0.06);
+    bow.rotation.set(-0.12, Math.PI / 2, 0);
     h.armR.add(bow);
     const quiver = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.55, 10), M(0x5a4028));
     quiver.position.set(-0.18, 1.62, -0.3);
     quiver.rotation.z = 0.3;
     g.add(quiver);
   } else {
+    // lâmina em riste, como o herói
+    const bladeG = new THREE.Group();
+    bladeG.position.set(0, -0.84, 0.05);
+    bladeG.rotation.x = -Math.PI / 2 - 0.35;
     const blade = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.9, 0.035), M(0x9aa0a8));
-    blade.position.set(0, -1.28, 0.05);
-    h.armR.add(blade);
+    blade.position.y = -0.5;
+    bladeG.add(blade);
+    h.armR.add(bladeG);
   }
   shadows(g);
   return { group: g, armL: h.armL, armR: h.armR, legL: h.legL, legR: h.legR, mats, legs: [h.legL, h.legR] };
@@ -425,9 +441,9 @@ export function makeHobbe({ shaman = false } = {}) {
 
   if (shaman) {
     const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 1.1, 8), M(0x4a3a20));
-    rod.position.set(0, -0.5, 0.1);
+    rod.position.set(0, -0.55, 0.12);
     const orb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 10), basic(0x6ee86e));
-    orb.position.set(0, -1.05, 0.1);
+    orb.position.set(0, 0.02, 0.12);
     armR.add(rod, orb);
     for (let i = -1; i <= 1; i++) {
       const feather = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.34, 6), M(i === 0 ? 0xd83a2a : 0xe8d05a));
@@ -757,12 +773,13 @@ export function makeWeaponModel(key) {
     case 'arco_longo': {
       const long = key === 'arco_longo';
       const r = long ? 0.62 : 0.5;
+      // o ventre do arco (empunhadura) fica na ORIGEM — a mão segura aqui
       const arc = new THREE.Mesh(new THREE.TorusGeometry(r, 0.028, 8, 18, Math.PI * 1.05), M(long ? 0x7a5a30 : 0x5a4028));
       arc.rotation.z = -Math.PI * 0.52;
-      arc.position.y = -0.55;
+      arc.position.x = -r;
       const stringGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0.02, -0.55 + r, 0),
-        new THREE.Vector3(0.02, -0.55 - r, 0),
+        new THREE.Vector3(-1.03 * r, r * 0.99, 0),
+        new THREE.Vector3(-1.03 * r, -r * 0.99, 0),
       ]);
       const string = new THREE.Line(stringGeo, new THREE.LineBasicMaterial({ color: 0xd8d0b8 }));
       g.add(arc, string, grip());
