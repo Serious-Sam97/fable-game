@@ -16,6 +16,7 @@ const butterflies = [];
 const birds = [];
 export const chests = [];
 export const MAP_FEATURES = [];   // minimap statics {x, z, color, r}
+export const colliders = [];      // cilindros de colisão {x, z, r} — casas, árvores, pedras…
 
 function lambert(color, opts = {}) { return new THREE.MeshLambertMaterial({ color, ...opts }); }
 
@@ -179,6 +180,7 @@ function addTree(x, z, s, kind) {
   g.position.set(x, y, z);
   g.rotation.y = rnd(x, z) * Math.PI * 2;
   scene.add(g);
+  colliders.push({ x, z, r: 0.45 * s }); // tronco
 }
 
 function buildVegetation() {
@@ -203,6 +205,7 @@ function buildVegetation() {
     rock.rotation.set(rnd(i, 5) * 3, rnd(i, 6) * 3, 0);
     rock.castShadow = true;
     scene.add(rock);
+    colliders.push({ x, z, r: s * 0.85 });
   }
   // instanced grass tufts
   {
@@ -331,6 +334,7 @@ function addLamp(x, z) {
   pole.castShadow = true;
   scene.add(g);
   lampLights.push({ light, mat: lantern.material });
+  colliders.push({ x, z, r: 0.3 });
 }
 
 export function addCampfire(x, z, big = false) {
@@ -354,6 +358,7 @@ export function addCampfire(x, z, big = false) {
   g.position.set(x, y + 0.15, z);
   scene.add(g);
   flames.push({ flame, inner, light });
+  colliders.push({ x, z, r: 0.7 });
 }
 
 function buildVillage() {
@@ -362,10 +367,12 @@ function buildVillage() {
   ];
   for (let i = 0; i < spots.length; i++) {
     const [x, z, rot] = spots[i];
-    const c = makeCottage(4.5 + rnd(i, 70) * 1.5, 4 + rnd(i, 71) * 1.5, 3 + rnd(i, 72), rot);
+    const w = 4.5 + rnd(i, 70) * 1.5, d = 4 + rnd(i, 71) * 1.5;
+    const c = makeCottage(w, d, 3 + rnd(i, 72), rot);
     c.position.set(x, terrainHeight(x, z), z);
     scene.add(c);
     MAP_FEATURES.push({ x, z, color: '#8a6d4a', r: 4 });
+    colliders.push({ x, z, r: Math.max(w, d) * 0.72 });
   }
   // well
   {
@@ -381,6 +388,7 @@ function buildVillage() {
     g.traverse(o => { if (o.isMesh) o.castShadow = true; });
     g.position.set(0, terrainHeight(0, 0), 0);
     scene.add(g);
+    colliders.push({ x: 0, z: 0, r: 1.5 }); // poço
   }
   // market stall
   {
@@ -400,6 +408,7 @@ function buildVillage() {
     g.position.set(9, terrainHeight(9, 3), 3);
     g.rotation.y = -0.9;
     scene.add(g);
+    colliders.push({ x: 9, z: 3, r: 1.9 }); // feira do Barnum
   }
   addLamp(-4, -6); addLamp(6, -8); addLamp(-6, 7); addLamp(8, 8);
   addCampfire(3, -3);
@@ -412,6 +421,7 @@ function buildVillage() {
     post.position.set(x, terrainHeight(x, z) + 0.55, z);
     post.castShadow = true;
     scene.add(post);
+    colliders.push({ x, z, r: 0.25 });
     if (i > 0) {
       const a0 = -0.6 + (i - 0.5) * 0.16;
       const mx = Math.cos(a0) * 21, mz = Math.sin(a0) * 21;
@@ -433,6 +443,7 @@ function buildBanditCamp() {
     tent.position.set(x, terrainHeight(x, z) + 1.3, z);
     tent.castShadow = true;
     scene.add(tent);
+    colliders.push({ x, z, r: 2.2 });
   }
   for (let i = 0; i < 4; i++) {
     const x = cx + (rnd(i, 80) - 0.5) * 14, z = cz + (rnd(i, 81) - 0.5) * 14;
@@ -441,6 +452,7 @@ function buildBanditCamp() {
     crate.rotation.y = rnd(i, 82) * 1.5;
     crate.castShadow = true;
     scene.add(crate);
+    colliders.push({ x, z, r: 0.75 });
   }
   // banner
   const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 4.4, 6), lambert(0x3a2a18));
@@ -499,6 +511,7 @@ function buildChests() {
     g.rotation.y = rnd(s.x, s.z) * Math.PI * 2;
     scene.add(g);
     chests.push({ group: g, lid, pos: new THREE.Vector3(s.x, y, s.z), loot: s.loot, opened: false });
+    colliders.push({ x: s.x, z: s.z, r: 0.8 });
   }
 }
 

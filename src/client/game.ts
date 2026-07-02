@@ -5,7 +5,7 @@ import {
 } from './core';
 import {
   WORLD_R, LAKE, terrainHeight, buildWorld, updateWorld,
-  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST,
+  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, colliders,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
@@ -136,6 +136,67 @@ function combatStats() {
     critBonus: hasTalent('olho_mortal') ? 0.08 : 0,
     chainBonus: hasTalent('tormenta') ? 1 : 0,
   };
+}
+
+// ============================================================ colisão & terreno andável
+const PLAYER_R = 0.45;
+let edgeMsgT = -99;
+
+function walkable(nx, nz) {
+  if (Math.hypot(nx, nz) >= WORLD_R) {
+    if (time > edgeMsgT) {
+      edgeMsgT = time + 6;
+      floatText(player.pos, '🌫️ As terras além das colinas ainda não foram mapeadas…', '#a8b8c8', 14);
+    }
+    return false;
+  }
+  // só a água FUNDA do lago bloqueia — vales secos longe dele são livres
+  const dL = Math.hypot(nx - LAKE.x, nz - LAKE.z);
+  if (dL < LAKE.r + 6 && terrainHeight(nx, nz) < LAKE.waterY - 0.3) return false;
+  return true;
+}
+
+function resolveStatic(x, z, radius = PLAYER_R) {
+  for (const c of colliders) {
+    const min = c.r + radius;
+    const dx = x - c.x, dz = z - c.z;
+    if (dx > min || dx < -min || dz > min || dz < -min) continue;
+    const d = Math.hypot(dx, dz);
+    if (d < min) {
+      if (d > 0.001) { x = c.x + (dx / d) * min; z = c.z + (dz / d) * min; }
+      else x += min;
+    }
+  }
+  return [x, z];
+}
+
+function resolvePeople(x, z) {
+  for (const n of npcs) {
+    const dx = x - n.pos.x, dz = z - n.pos.z;
+    const d = Math.hypot(dx, dz), min = 0.95;
+    if (d < min && d > 0.001) { x = n.pos.x + (dx / d) * min; z = n.pos.z + (dz / d) * min; }
+  }
+  for (const [, r] of remoteHeroes) {
+    const p = r.model.group.position;
+    const dx = x - p.x, dz = z - p.z;
+    const d = Math.hypot(dx, dz), min = 0.9;
+    if (d < min && d > 0.001) { x = p.x + (dx / d) * min; z = p.z + (dz / d) * min; }
+  }
+  return [x, z];
+}
+
+function movePlayerTo(nx, nz) {
+  // desliza nos eixos quando a diagonal é bloqueada (água/borda do mundo)
+  if (!walkable(nx, nz)) {
+    if (walkable(nx, player.pos.z)) nz = player.pos.z;
+    else if (walkable(player.pos.x, nz)) nx = player.pos.x;
+    else return;
+  }
+  [nx, nz] = resolveStatic(nx, nz);
+  [nx, nz] = resolvePeople(nx, nz);
+  if (!walkable(nx, nz)) return; // o empurrão da colisão não pode te jogar na água
+  player.pos.x = nx;
+  player.pos.z = nz;
 }
 
 // Fable: o corpo conta a história — Força incha os ombros, Vontade acende tatuagens
@@ -1629,6 +1690,8 @@ function updateNpc(n, dt) {
         }
       }
     }
+    const np = resolveStatic(n.pos.x, n.pos.z, 0.4);
+    n.pos.x = np[0]; n.pos.z = np[1];
     n.pos.y = terrainHeight(n.pos.x, n.pos.z);
     n.model.group.position.copy(n.pos);
     // ambient chatter
@@ -1784,11 +1847,10 @@ function tick() {
     if (player.rollT > 0) {
       // rolamento: dash rápido com i-frames e cambalhota
       player.rollT -= dt;
-      const nx = player.pos.x + player.rollDirX * 17 * dt;
-      const nz = player.pos.z + player.rollDirZ * 17 * dt;
-      if (terrainHeight(nx, nz) > LAKE.waterY - 0.35 && Math.hypot(nx, nz) < WORLD_R) {
-        player.pos.x = nx; player.pos.z = nz;
-      }
+      movePlayerTo(
+        player.pos.x + player.rollDirX * 17 * dt,
+        player.pos.z + player.rollDirZ * 17 * dt
+      );
       heroModel.group.rotation.y = Math.atan2(player.rollDirX, player.rollDirZ);
       heroModel.group.rotation.x = (1 - player.rollT / 0.35) * Math.PI * 2;
       if (player.rollT <= 0) heroModel.group.rotation.x = 0;
@@ -1796,12 +1858,7 @@ function tick() {
       mx /= ml; mz /= ml;
       player.lastDirX = mx; player.lastDirZ = mz;
       const speed = 9;
-      const nx = player.pos.x + mx * speed * dt;
-      const nz = player.pos.z + mz * speed * dt;
-      // block deep water & world edge
-      if (terrainHeight(nx, nz) > LAKE.waterY - 0.35 && Math.hypot(nx, nz) < WORLD_R) {
-        player.pos.x = nx; player.pos.z = nz;
-      }
+      movePlayerTo(player.pos.x + mx * speed * dt, player.pos.z + mz * speed * dt);
       heroModel.group.rotation.y = Math.atan2(mx, mz);
       player.walkT += dt * 9;
     } else {
