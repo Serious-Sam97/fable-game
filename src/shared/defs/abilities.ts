@@ -5,7 +5,7 @@ export interface AbilityDef {
   key: string;
   cost: number;      // vontade — debitada no cliente (autolimitante; TODO validar na Fase 2)
   cd: number;        // cooldown em segundos
-  range: number;     // 0 = sem alvo / área ao redor do herói
+  range: number;     // 0 = sem alvo / área ao redor do herói; golpe usa o alcance da ARMA
   needTarget: boolean;
 }
 
@@ -20,19 +20,44 @@ export const ABILITIES: Record<string, AbilityDef> = {
 
 export const GCD = 1.0;             // global cooldown no cliente
 export const FIREBALL_SPEED = 26;   // velocidade do projétil (visual e agendamento do dano)
+export const ARROW_SPEED = 42;
 export const PUSH_RADIUS = 8;
 export const PUSH_FORCE = 16;
 export const CHAIN_RADIUS = 9;
 export const CHAIN_MAX = 2;
 
-/** fórmula única de dano — mult = multiplicador de combate (0..25), luck = Amuleto da Sorte */
-export function abilityDamage(key: string, lvl: number, mult: number, luck: boolean): number {
-  const m = (1 + Math.min(mult, 25) * 0.03) * (luck ? 1.08 : 1);
+/** atributos de combate do herói — Fable: você vira o que você usa */
+export interface CombatStats {
+  lvl: number;        // nível geral
+  str: number;        // Força (melee)
+  skl: number;        // Habilidade (arco / crítico)
+  wil: number;        // Vontade (magia)
+  luck: boolean;      // Amuleto da Sorte
+  wpnKind: 'melee' | 'bow' | 'staff';
+  wpnDmg: number;     // mult da arma × raridade
+  wpnRange: number;   // alcance do ataque básico
+  spellMult: number;  // cajados amplificam magia
+}
+
+export const critChance = (skl: number) => Math.min(0.4, 0.05 + skl * 0.015);
+export const discSource = (key: string, wpnKind: string): 'melee' | 'ranged' | 'magic' =>
+  key === 'golpe' ? (wpnKind === 'bow' ? 'ranged' : 'melee') : 'magic';
+
+/** fórmula única de dano — mult = multiplicador de combate (0..25) */
+export function abilityDamage(key: string, c: CombatStats, mult: number): { dmg: number; crit: boolean } {
+  const m = (1 + Math.min(mult, 25) * 0.03) * (c.luck ? 1.08 : 1);
+  let base = 0;
   switch (key) {
-    case 'golpe': return Math.round((12 + lvl * 3 + Math.random() * 8) * m);
-    case 'bola': return Math.round((20 + lvl * 4 + Math.random() * 10) * m);
-    case 'relampago': return Math.round((16 + lvl * 4 + Math.random() * 8) * m);
-    case 'empurrao': return Math.round((8 + lvl * 2) * m);
-    default: return 0;
+    case 'golpe':
+      base = c.wpnKind === 'bow'
+        ? (10 + c.lvl * 2 + c.skl * 2.5 + Math.random() * 6) * c.wpnDmg
+        : (12 + c.lvl * 2 + c.str * 2.5 + Math.random() * 8) * c.wpnDmg;
+      break;
+    case 'bola': base = (18 + c.lvl * 2 + c.wil * 2.5 + Math.random() * 10) * c.spellMult; break;
+    case 'relampago': base = (14 + c.lvl * 2 + c.wil * 2.5 + Math.random() * 8) * c.spellMult; break;
+    case 'empurrao': base = (8 + c.lvl + c.wil * 1.5) * c.spellMult; break;
+    default: return { dmg: 0, crit: false };
   }
+  const crit = Math.random() < critChance(c.skl);
+  return { dmg: Math.round(base * m * (crit ? 1.6 : 1)), crit };
 }

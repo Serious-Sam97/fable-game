@@ -20,6 +20,16 @@ export interface PlayerState {
   halo: boolean;
   horns: boolean;
   luck: boolean;   // Amuleto da Sorte (+8% dano na fórmula do servidor)
+  // disciplinas (Fable: você vira o que você usa) — clampadas no servidor
+  str: number;
+  skl: number;
+  wil: number;
+  // arma equipada — key para o visual dos outros clientes, números para o CombatSim
+  wpn: string;
+  wpnKind: 'melee' | 'bow' | 'staff';
+  wpnDmg: number;
+  wpnRange: number;
+  spellMult: number;
 }
 
 export const CHAT_MAX = 200;

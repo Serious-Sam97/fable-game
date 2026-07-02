@@ -113,8 +113,18 @@ wss.on('connection', (ws, req) => {
       case 'cast': {
         const s = p.state;
         if (!s || s.dead) break;
+        const clamp = (v: unknown, a: number, b: number) => Math.min(b, Math.max(a, Number(v) || 0));
         combat.cast(
-          { id, x: s.x, z: s.z, lvl: s.lvl, luck: !!s.luck },
+          {
+            id, x: s.x, z: s.z,
+            lvl: clamp(s.lvl, 1, 60), luck: !!s.luck,
+            // atributos declarados pelo cliente, mas presos a faixas sãs
+            str: clamp(s.str, 0, 50), skl: clamp(s.skl, 0, 50), wil: clamp(s.wil, 0, 50),
+            wpnKind: s.wpnKind === 'bow' || s.wpnKind === 'staff' ? s.wpnKind : 'melee',
+            wpnDmg: clamp(s.wpnDmg, 0.5, 2.4),
+            wpnRange: clamp(s.wpnRange, 2, 30),
+            spellMult: clamp(s.spellMult, 1, 1.3),
+          },
           String(m.key),
           typeof m.targetId === 'number' ? m.targetId : undefined,
         );

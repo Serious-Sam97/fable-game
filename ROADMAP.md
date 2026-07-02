@@ -77,19 +77,22 @@ imperceptível e o servidor sobrevivendo a refresh dos dois.
 *Transformar o combate raso em um RPG de verdade.*
 
 ### Equipamento & inventário
-- [ ] **Armas visíveis no personagem**: espadas, machados, martelos, arcos, cajados
-      (cada uma com modelo, velocidade, alcance e moveset próprios)
+- [x] **Armas visíveis no personagem**: espada gasta/longa, machado, martelo, 2 arcos e
+      cajado — modelo 3D próprio, dano/alcance próprios, visíveis nos outros jogadores
 - [ ] Armaduras por slot (cabeça/peito/pernas/botas) **visíveis** e com peso
       (leve = esquiva, pesada = defesa) — estilo Fable
-- [ ] Raridades (comum→lendário), afixos ("da Chama", "do Vampiro"), itens únicos com lore
-- [ ] Inventário em grade com drag & drop, comparação de itens, lixeira/venda
+- [x] Raridades (Comum→Lendário com cores e multiplicadores); drops por inimigo,
+      chefes nunca dropam comum; falta: afixos e itens únicos com lore
+- [x] Inventário (tecla I) com equipar/vender e loja do Barnum vendendo armas;
+      falta: grade com drag & drop e comparação lado a lado
 
 ### Progressão estilo Fable
-- [ ] **XP tripartido: Força / Habilidade / Vontade** — você vira o que você usa
-      (bater = Força, arco/crítico = Habilidade, magia = Vontade)
+- [x] **XP tripartido: Força / Habilidade / Vontade** — cada acerto treina a disciplina
+      da fonte do dano (melee/arco/magia); Força dá +vida e +dano físico, Habilidade
+      dá +crítico (💥×1.6) e +dano de arco, Vontade dá +vontade e +dano mágico
 - [ ] Árvores de talento por linha (ex.: Vontade: Fogo→Inferno, Tempo Lento→Parar o Tempo)
-- [ ] A **aparência do herói muda** com os stats: Força = musculoso, Vontade = tatuagens
-      arcanas brilhantes, idade/cicatrizes com o tempo — assinatura de Fable
+- [x] A **aparência do herói muda**: Força alarga ombros/torso, Vontade acende
+      tatuagens arcanas com bloom — sincronizado no multiplayer; falta: idade/cicatrizes
 
 ### Combate
 - [ ] **Bloqueio, esquiva (rolamento) e parry** com timing; stamina

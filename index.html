@@ -166,6 +166,34 @@
   #charPanel .ctitle { font-style: italic; color: #a89468; font-size: 13px; margin-bottom: 12px; }
   #charPanel .row { display: flex; justify-content: space-between; font-size: 14px; padding: 3px 0; border-bottom: 1px solid rgba(138,109,47,.25); }
   #charPanel .row span:last-child { color: #ffe9a8; }
+  /* disciplinas Fable */
+  #discs { margin: 12px 0 4px; }
+  .disc { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .disc .dname { width: 90px; font-size: 13px; color: #ffd24a; }
+  .disc .dlvl { width: 26px; text-align: center; font-weight: bold; color: #ffe9a8; font-family: Arial, sans-serif; font-size: 13px; }
+  .disc .dbar { flex: 1; height: 9px; background: #1a1208; border: 1px solid #000; border-radius: 3px; overflow: hidden; }
+  .disc .dfill { height: 100%; transform-origin: left; }
+  .disc.str .dfill { background: linear-gradient(180deg, #e86a4a, #8a2c1c); }
+  .disc.skl .dfill { background: linear-gradient(180deg, #6ade6a, #1e7a1e); }
+  .disc.wil .dfill { background: linear-gradient(180deg, #6a9de8, #23409c); }
+
+  /* ============ inventário ============ */
+  #invPanel { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-52%); width: 460px; max-height: 70vh; overflow-y: auto; padding: 16px 20px; display: none; pointer-events: auto; }
+  #invPanel h2 { font-family: 'IM Fell English SC', serif; font-size: 20px; color: #ffd24a; text-shadow: 1px 1px 0 #000; margin-bottom: 10px; }
+  .invRow { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid rgba(138,109,47,.25); }
+  .invRow .iicon { font-size: 22px; width: 30px; text-align: center; }
+  .invRow .iinfo { flex: 1; }
+  .invRow .iname { font-size: 14px; font-weight: bold; }
+  .invRow .istats { font-size: 11px; color: #a89468; font-family: Arial, sans-serif; }
+  .invRow button {
+    font-family: 'IM Fell English', serif; font-size: 12px; padding: 4px 10px; cursor: pointer;
+    background: linear-gradient(180deg, #7a2d0e, #4a1a06); color: #ffd9a0;
+    border: 1px solid #c8a24b; border-radius: 4px;
+  }
+  .invRow button:hover { background: linear-gradient(180deg, #9c3a12, #5c2108); }
+  .invRow .equipped { font-size: 11px; color: #6fdc6f; font-style: italic; }
+  #invPanel .closeHint { text-align: center; font-size: 11px; color: #8a7a55; margin-top: 10px; font-style: italic; }
+
   #moralWrap { margin: 14px 0 4px; }
   #moralWrap .lbl { display: flex; justify-content: space-between; font-size: 12px; color: #a89468; margin-bottom: 3px; }
   #moralBar { position: relative; height: 12px; border-radius: 6px; border: 1px solid #000;
@@ -258,7 +286,7 @@
 
   <div id="actionbarWrap">
     <div id="actionbar" class="panel">
-      <div class="slot ab" data-i="0"><span class="key">1</span>⚔️<div class="cd"></div></div>
+      <div class="slot ab" data-i="0"><span class="key">1</span><span id="slot1Icon">🗡️</span><div class="cd"></div></div>
       <div class="slot ab" data-i="1"><span class="key">2</span>🔥<div class="cd"></div><span class="cost">20</span></div>
       <div class="slot ab" data-i="2"><span class="key">3</span>⚡<div class="cd"></div><span class="cost">25</span></div>
       <div class="slot ab" data-i="3"><span class="key">4</span>💨<div class="cd"></div><span class="cost">20</span></div>
@@ -291,11 +319,22 @@
     <div class="row"><span>Renome</span><span id="cRenown">0</span></div>
     <div class="row"><span>Galinhas chutadas</span><span id="cKicks">0</span></div>
     <div class="row"><span>Inimigos derrotados</span><span id="cKills">0</span></div>
+    <div id="discs">
+      <div class="disc str"><span class="dname">💪 Força</span><span class="dlvl" id="dStrLvl">0</span><div class="dbar"><div class="dfill" id="dStrFill"></div></div></div>
+      <div class="disc skl"><span class="dname">🎯 Habilidade</span><span class="dlvl" id="dSklLvl">0</span><div class="dbar"><div class="dfill" id="dSklFill"></div></div></div>
+      <div class="disc wil"><span class="dname">✨ Vontade</span><span class="dlvl" id="dWilLvl">0</span><div class="dbar"><div class="dfill" id="dWilFill"></div></div></div>
+    </div>
     <div id="moralWrap">
       <div class="lbl"><span>😈 Maldade</span><span>Alinhamento</span><span>Bondade 😇</span></div>
       <div id="moralBar"><div id="moralMarker"></div></div>
     </div>
     <div class="closeHint">Pressione C para fechar</div>
+  </div>
+
+  <div id="invPanel" class="panel">
+    <h2>Inventário</h2>
+    <div id="invList"></div>
+    <div class="closeHint">Pressione I para fechar · armas dropam de inimigos</div>
   </div>
 
   <div id="interact"><b>F</b><span id="interactTxt"></span></div>
@@ -306,7 +345,7 @@
 
   <div id="help" class="panel">
     <b>WASD</b> mover &nbsp; <b>Espaço</b> pular &nbsp; <b>Mouse</b> câmera &nbsp; <b>Scroll</b> zoom &nbsp; <b>Tab</b> alvo &nbsp; <b>1-8</b> habilidades<br>
-    <b>F</b> interagir / chutar galinha &nbsp; <b>C</b> personagem &nbsp; <b>M</b> música &nbsp; <b>Enter</b> chat &nbsp; <b>Clique</b> selecionar / falar
+    <b>F</b> interagir &nbsp; <b>C</b> personagem &nbsp; <b>I</b> inventário &nbsp; <b>M</b> música &nbsp; <b>Enter</b> chat &nbsp; <b>Clique</b> selecionar / falar
   </div>
 
   <div id="plates"></div>

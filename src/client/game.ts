@@ -9,10 +9,11 @@ import {
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel,
 } from './models';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
-import { ABILITIES, FIREBALL_SPEED } from '../shared/defs/abilities';
+import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
+import { WEAPONS, rarityOf, rollDrop, sellPrice } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
@@ -37,6 +38,10 @@ const player = {
   walkT: 0, swingT: 0, lastCombat: -99,
   mult: 0, multT: 0, slowT: 0,
   achKick: false,
+  // disciplinas Fable — você vira o que você usa
+  disc: { str: { lvl: 0, xp: 0 }, skl: { lvl: 0, xp: 0 }, wil: { lvl: 0, xp: 0 } },
+  inventory: [],
+  equipped: { wpn: 'espada_gasta', rar: 'comum' },
 };
 player.pos.y = terrainHeight(player.pos.x, player.pos.z);
 const xpToNext = (lvl) => 90 + lvl * 60;
@@ -53,6 +58,63 @@ function playerTitle() {
 function updateMoralityVisuals() {
   heroModel.halo.visible = player.morality >= 40;
   heroModel.horns.visible = player.morality <= -40;
+}
+
+// ============================================================ disciplinas & arma equipada
+const discXpToNext = (lvl) => 60 + lvl * 55;
+const DISC_LABEL = { str: '💪 Força', skl: '🎯 Habilidade', wil: '✨ Vontade' };
+
+function recomputeMaxes() {
+  player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8;
+  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5;
+  player.hp = Math.min(player.hp, player.maxHp);
+  player.will = Math.min(player.will, player.maxWill);
+}
+
+function gainDiscXP(kind, amt) {
+  const d = player.disc[kind];
+  if (!d || d.lvl >= 50 || amt <= 0) return;
+  d.xp += amt;
+  while (d.xp >= discXpToNext(d.lvl)) {
+    d.xp -= discXpToNext(d.lvl);
+    d.lvl++;
+    toast(`${DISC_LABEL[kind]} subiu para ${d.lvl}!`);
+    beep(700 + d.lvl * 12, 0.18, 'sine', 0.06, 150);
+    recomputeMaxes();
+    updateHeroBody();
+    saveGame();
+  }
+}
+
+function equippedStats() {
+  const w = WEAPONS[player.equipped.wpn] ?? WEAPONS.espada_gasta;
+  const rar = rarityOf(player.equipped.rar);
+  return { def: w, rar, dmg: w.mult * rar.mult, range: w.range, kind: w.kind, spellMult: w.spellBoost ?? 1 };
+}
+function combatStats() {
+  const eq = equippedStats();
+  return {
+    lvl: player.level,
+    str: player.disc.str.lvl, skl: player.disc.skl.lvl, wil: player.disc.wil.lvl,
+    luck: player.luckCharm,
+    wpnKind: eq.kind, wpnDmg: eq.dmg, wpnRange: eq.range, spellMult: eq.spellMult,
+  };
+}
+
+// Fable: o corpo conta a história — Força incha os ombros, Vontade acende tatuagens
+function updateHeroBody() {
+  const str = player.disc.str.lvl, wil = player.disc.wil.lvl;
+  const bulk = 1 + Math.min(str, 12) * 0.045;
+  heroModel.shL.scale.setScalar(bulk);
+  heroModel.shR.scale.setScalar(bulk);
+  heroModel.torso.scale.x = 1 + Math.min(str, 12) * 0.025;
+  const glow = wil >= 2;
+  for (const t of heroModel.tattooMeshes) t.visible = glow;
+  heroModel.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + wil * 0.18) : 0;
+  heroModel.weaponMount.clear();
+  heroModel.weaponMount.add(makeWeaponModel(player.equipped.wpn));
+  const eq = equippedStats();
+  $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
 }
 
 // ============================================================ quests
@@ -219,7 +281,8 @@ function processSimEvents() {
         // dano validado pela simulação — todos os clientes veem o número
         if (!v) break;
         const mine = ev.pid === myPid();
-        floatText(v.pos, ev.amount, mine ? '#ffd24a' : '#9ad0ff', 18);
+        if (ev.crit) floatText(v.pos, `💥 ${ev.amount}`, mine ? '#ff8a2a' : '#9ad0ff', 25);
+        else floatText(v.pos, ev.amount, mine ? '#ffd24a' : '#9ad0ff', 18);
         for (const m of v.model.mats) m.emissive.setHex(0x661111);
         setTimeout(() => { for (const m of v.model.mats) m.emissive.setHex(0x000000); }, 120);
         if (mine) {
@@ -228,6 +291,9 @@ function processSimEvents() {
           player.multT = 5;
           const el = $('mult');
           el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+          // você vira o que você usa: cada golpe treina a disciplina correspondente
+          const dk = ev.src === 'ranged' ? 'skl' : ev.src === 'magic' ? 'wil' : 'str';
+          gainDiscXP(dk, Math.round(ev.amount * 0.6));
         }
         break;
       }
@@ -402,6 +468,8 @@ function onEnemyDeath(e, mine, killerPid) {
     const gold = e.def.gold[0] + Math.round(Math.random() * (e.def.gold[1] - e.def.gold[0]));
     dropOrbs(e.pos, e.def.xp, gold);
     if (e.def.renown) gainRenown(e.def.renown);
+    const drop = rollDrop(e.type, e.def.lvl);
+    if (drop) addItem(drop);
     questCredit(e);
   } else if (killerPid > 0 && player.pos.distanceTo(e.pos) < 30) {
     // caçada em grupo: aliado perto ganha metade do XP e crédito de missão
@@ -461,8 +529,7 @@ function gainXP(amt) {
   while (player.xp >= xpToNext(player.level)) {
     player.xp -= xpToNext(player.level);
     player.level++;
-    player.maxHp = maxHpFor(player.level);
-    player.maxWill = maxWillFor(player.level);
+    recomputeMaxes();
     player.hp = player.maxHp; player.will = player.maxWill;
     centerMsg(`Nível ${player.level}!`, 'Seu poder cresce…');
     ringEffect(player.pos, 0xffd24a, 5);
@@ -496,7 +563,7 @@ function castAbility(key, tgt) {
     sendMsg({ t: 'cast', key, targetId: tgt ? tgt.id : undefined });
   } else {
     combatLocal.cast(
-      { id: 0, x: player.pos.x, z: player.pos.z, lvl: player.level, luck: player.luckCharm },
+      { id: 0, x: player.pos.x, z: player.pos.z, ...combatStats() },
       key, tgt ? tgt.id : undefined,
     );
   }
@@ -505,8 +572,20 @@ function castAbility(key, tgt) {
 const abilities = [
   { ...ABILITIES.golpe, name: 'Golpe',
     use(t) {
-      player.swingT = 0.35;
-      beep(160, 0.08, 'square', 0.06);
+      if (equippedStats().kind === 'bow') {
+        // flecha é só visual — o dano chega via evento edmg
+        const arrow = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.02, 0.55, 4),
+          new THREE.MeshBasicMaterial({ color: 0xd8c8a0 })
+        );
+        arrow.position.copy(player.pos).add(new THREE.Vector3(0, 1.8, 0));
+        scene.add(arrow);
+        projectiles.push({ mesh: arrow, target: t, speed: ARROW_SPEED, orient: true });
+        beep(900, 0.08, 'triangle', 0.05, -300);
+      } else {
+        player.swingT = 0.35;
+        beep(160, 0.08, 'square', 0.06);
+      }
       castAbility('golpe', t);
     } },
   { ...ABILITIES.bola, name: 'Bola de Fogo',
@@ -563,7 +642,8 @@ function tryAbility(i) {
   if (ab.needTarget) {
     if (!target || target.state === 'dead' || target.state === 'surrender') { errorMsg('Você não tem um alvo'); return; }
     const d = Math.hypot(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
-    if (d > ab.range) { errorMsg('Fora de alcance'); return; }
+    const range = i === 0 ? equippedStats().range : ab.range; // golpe usa o alcance da arma
+    if (d > range) { errorMsg('Fora de alcance'); return; }
     heroModel.group.rotation.y = Math.atan2(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
   }
   player.will -= ab.cost;
@@ -748,6 +828,10 @@ function openShop() {
     { label: '🧪 Poção de Vida — 50 🪙', cb: buy(50, () => { player.potions.hp++; toast('Comprou: Poção de Vida'); }) },
     { label: '🔮 Poção de Vontade — 60 🪙', cb: buy(60, () => { player.potions.will++; toast('Comprou: Poção de Vontade'); }) },
   ];
+  for (const wk of ['machado', 'arco_cacador', 'cajado_arcano']) {
+    const w = WEAPONS[wk];
+    buttons.push({ label: `${w.icon} ${w.name} — ${w.price} 🪙`, cb: buy(w.price, () => addItem({ wpn: wk, rar: 'comum' })) });
+  }
   if (!player.luckCharm) buttons.push({ label: '🍀 Amuleto da Sorte — 300 🪙 (+8% dano)', cb: buy(300, () => { player.luckCharm = true; toast('Comprou: Amuleto da Sorte (+8% dano)'); saveGame(); }) });
   buttons.push(closeBtn);
   showDialog('Barnum, o Mercador',
@@ -780,6 +864,82 @@ function confrontLeader() {
     ]);
 }
 
+// ============================================================ inventory
+function addItem(item) {
+  const w = WEAPONS[item.wpn], rar = rarityOf(item.rar);
+  if (!w) return;
+  if (player.inventory.length >= 12) {
+    const gold = sellPrice(item);
+    player.gold += gold;
+    toast(`🎒 Inventário cheio — ${w.name} vendida (+${gold} 🪙)`);
+    return;
+  }
+  player.inventory.push(item);
+  toast(`🎁 Saque: ${w.icon} ${w.name} (${rar.name})`);
+  beep(980, 0.12, 'sine', 0.05); setTimeout(() => beep(1240, 0.16, 'sine', 0.05), 110);
+  saveGame();
+}
+
+function invRow(item, isEquipped, idx) {
+  const w = WEAPONS[item.wpn], rar = rarityOf(item.rar);
+  const row = document.createElement('div');
+  row.className = 'invRow';
+  const kindTxt = w.kind === 'bow' ? 'treina Habilidade' : w.kind === 'staff' ? 'treina Vontade' : 'treina Força';
+  const boost = w.spellBoost ? ` · magia +${Math.round((w.spellBoost - 1) * 100)}%` : '';
+  row.innerHTML = `<span class="iicon">${w.icon}</span><div class="iinfo">
+    <div class="iname" style="color:${rar.color}">${w.name} <small>(${rar.name})</small></div>
+    <div class="istats">dano ×${(w.mult * rar.mult).toFixed(2)} · alcance ${w.range}${boost} · ${kindTxt}</div></div>`;
+  if (isEquipped) {
+    const tag = document.createElement('span');
+    tag.className = 'equipped';
+    tag.textContent = 'equipada';
+    row.appendChild(tag);
+  } else {
+    const bE = document.createElement('button');
+    bE.textContent = 'Equipar';
+    bE.onclick = () => {
+      const old = player.equipped;
+      player.equipped = item;
+      player.inventory.splice(idx, 1);
+      player.inventory.push(old);
+      updateHeroBody();
+      renderInventory();
+      saveGame();
+      beep(600, 0.1, 'sine', 0.05);
+    };
+    const bS = document.createElement('button');
+    bS.textContent = `Vender ${sellPrice(item)}🪙`;
+    bS.onclick = () => {
+      player.gold += sellPrice(item);
+      player.inventory.splice(idx, 1);
+      renderInventory();
+      saveGame();
+      beep(1250, 0.09, 'sine', 0.05);
+    };
+    row.appendChild(bE);
+    row.appendChild(bS);
+  }
+  return row;
+}
+function renderInventory() {
+  const list = $('invList');
+  list.innerHTML = '';
+  list.appendChild(invRow(player.equipped, true, -1));
+  player.inventory.forEach((it, i) => list.appendChild(invRow(it, false, i)));
+  if (!player.inventory.length) {
+    const empty = document.createElement('div');
+    empty.className = 'istats';
+    empty.style.cssText = 'padding:8px 4px;color:#a89468;font-family:Arial;font-size:12px';
+    empty.textContent = 'Mochila vazia — derrote inimigos para saquear armas.';
+    list.appendChild(empty);
+  }
+}
+function toggleInventory() {
+  const p = $('invPanel');
+  if (p.style.display === 'block') p.style.display = 'none';
+  else { renderInventory(); p.style.display = 'block'; }
+}
+
 // ============================================================ character panel
 function updateCharPanel() {
   $('cTitle').textContent = playerTitle() + (player.morality <= -40 ? ' Temível' : player.morality >= 40 ? ' Bondoso' : '');
@@ -789,6 +949,12 @@ function updateCharPanel() {
   $('cRenown').textContent = player.renown;
   $('cKicks').textContent = player.kicks;
   $('cKills').textContent = player.kills;
+  $('dStrLvl').textContent = player.disc.str.lvl;
+  $('dSklLvl').textContent = player.disc.skl.lvl;
+  $('dWilLvl').textContent = player.disc.wil.lvl;
+  $('dStrFill').style.transform = `scaleX(${player.disc.str.xp / discXpToNext(player.disc.str.lvl)})`;
+  $('dSklFill').style.transform = `scaleX(${player.disc.skl.xp / discXpToNext(player.disc.skl.lvl)})`;
+  $('dWilFill').style.transform = `scaleX(${player.disc.wil.xp / discXpToNext(player.disc.wil.lvl)})`;
   $('moralMarker').style.left = `${50 + player.morality / 2}%`;
 }
 function toggleCharPanel() {
@@ -873,9 +1039,10 @@ addEventListener('keydown', (ev) => {
     if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
     return;
   }
-  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; return; }
+  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; return; }
   if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
   if (ev.code === 'KeyC') { toggleCharPanel(); return; }
+  if (ev.code === 'KeyI') { toggleInventory(); return; }
   if (ev.code === 'KeyM') { toast(toggleMusic() ? '🎵 Música ligada' : '🔇 Música desligada'); return; }
   if (ev.code.startsWith('Digit')) {
     const n = +ev.code.slice(5);
@@ -962,6 +1129,7 @@ function buildSaveData() {
     q1: { state: quests.q1.state, count: quests.q1.count },
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
+    disc: player.disc, inventory: player.inventory, equipped: player.equipped,
   };
 }
 function saveGame() {
@@ -982,7 +1150,11 @@ function applySaveData(data) {
   player.morality = data.morality; player.renown = data.renown;
   player.potions = data.potions; player.kicks = data.kicks; player.kills = data.kills || 0;
   player.luckCharm = !!data.luckCharm; player.achKick = !!data.achKick;
-  player.maxHp = maxHpFor(player.level); player.maxWill = maxWillFor(player.level);
+  player.disc = data.disc ?? { str: { lvl: 0, xp: 0 }, skl: { lvl: 0, xp: 0 }, wil: { lvl: 0, xp: 0 } };
+  player.inventory = data.inventory ?? [];
+  player.equipped = data.equipped && WEAPONS[data.equipped.wpn] ? data.equipped : { wpn: 'espada_gasta', rar: 'comum' };
+  player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8;
+  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5;
   player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
   player.will = clamp(data.will ?? player.maxWill, 0, player.maxWill);
   player.pos.set(data.pos[0], 0, data.pos[1]);
@@ -994,6 +1166,7 @@ function applySaveData(data) {
   if (!net.connected && (quests.q2.state === 'completed' || quests.q2.choice)) localSim.removeLeader();
   if (quests.q3.state === 'active') requestSpawnBalverine();
   updateMoralityVisuals();
+  updateHeroBody();
   updateQuestUI();
 }
 
@@ -1025,13 +1198,19 @@ function startGame(fromSave) {
   started = true;
   startMusic();
   connectNet(
-    () => ({
-      x: player.pos.x, z: player.pos.z, ry: heroModel.group.rotation.y,
-      name: NET_NAME, lvl: player.level,
-      moving: !!player.moving && !player.dead, dead: player.dead,
-      halo: heroModel.halo.visible, horns: heroModel.horns.visible,
-      luck: player.luckCharm,
-    }),
+    () => {
+      const cs = combatStats();
+      return {
+        x: player.pos.x, z: player.pos.z, ry: heroModel.group.rotation.y,
+        name: NET_NAME, lvl: player.level,
+        moving: !!player.moving && !player.dead, dead: player.dead,
+        halo: heroModel.halo.visible, horns: heroModel.horns.visible,
+        luck: player.luckCharm,
+        str: cs.str, skl: cs.skl, wil: cs.wil,
+        wpn: player.equipped.wpn,
+        wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, spellMult: cs.spellMult,
+      };
+    },
     {
       login: () => {
         const fresh = freshStart;
@@ -1233,7 +1412,7 @@ function ensureRemoteHero(id) {
   plate.className = 'plate';
   plate.innerHTML = `<div class="pname" style="color:#7fd0ff"></div>`;
   $('plates').appendChild(plate);
-  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false };
+  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null };
   remoteHeroes.set(id, r);
   return r;
 }
@@ -1255,6 +1434,18 @@ function updateRemoteHeroes(dt) {
     r.model.group.rotation.y = r.ry;
     r.model.halo.visible = !!s.halo;
     r.model.horns.visible = !!s.horns;
+    // arma e físico dos outros heróis também aparecem
+    if (r.wpnKey !== s.wpn) {
+      r.wpnKey = s.wpn;
+      r.model.weaponMount.clear();
+      r.model.weaponMount.add(makeWeaponModel(s.wpn));
+    }
+    const bulk = 1 + Math.min(s.str ?? 0, 12) * 0.045;
+    r.model.shL.scale.setScalar(bulk);
+    r.model.shR.scale.setScalar(bulk);
+    const glow = (s.wil ?? 0) >= 2;
+    for (const tm of r.model.tattooMeshes) tm.visible = glow;
+    r.model.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + (s.wil ?? 0) * 0.18) : 0;
     if (s.moving) r.walkT += dt * 9; else r.walkT *= 0.8;
     const sw = Math.sin(r.walkT) * 0.65;
     r.model.legL.rotation.x = sw;
@@ -1421,7 +1612,9 @@ function tick() {
       scene.remove(p.mesh);
       projectiles.splice(i, 1);
     } else {
-      p.mesh.position.addScaledVector(dir.normalize(), Math.min(d, p.speed * dt));
+      dir.normalize();
+      p.mesh.position.addScaledVector(dir, Math.min(d, p.speed * dt));
+      if (p.orient) p.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
     }
   }
 
@@ -1562,6 +1755,7 @@ addEventListener('beforeunload', saveGame);
 // debug / experimental hooks
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
+  gainDiscXP, addItem, updateHeroBody,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },
@@ -1569,4 +1763,5 @@ window.FABLE = {
   startGame,
 };
 
+updateHeroBody(); // arma inicial na mão + visual das disciplinas
 animate();

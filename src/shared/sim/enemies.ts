@@ -14,7 +14,7 @@ export interface SimPlayerView {
 export type SimEvent =
   | { t: 'aggro'; id: number }
   | { t: 'eatk'; id: number; pid: number; dmg: number }
-  | { t: 'edmg'; id: number; amount: number; pid: number }              // dano aplicado (todos veem)
+  | { t: 'edmg'; id: number; amount: number; pid: number; src: 'melee' | 'ranged' | 'magic'; crit: boolean }
   | { t: 'edie'; id: number; killerPid: number }
   | { t: 'eleap'; id: number }
   | { t: 'eland'; id: number; pid: number; dmg: number }
@@ -108,11 +108,11 @@ export class EnemySim {
     return undefined;
   }
 
-  applyDamage(id: number, dmg: number, attackerPid: number) {
+  applyDamage(id: number, dmg: number, attackerPid: number, src: 'melee' | 'ranged' | 'magic' = 'melee', crit = false) {
     const e = this.enemies.get(id);
     if (!e || e.state === 'dead' || e.state === 'surrender' || e.state === 'flee') return;
     e.hp -= dmg;
-    this.events.push({ t: 'edmg', id: e.id, amount: dmg, pid: attackerPid });
+    this.events.push({ t: 'edmg', id: e.id, amount: dmg, pid: attackerPid, src, crit });
     if (e.state === 'idle' || e.state === 'return') {
       e.state = 'chase';
       e.targetPid = attackerPid;

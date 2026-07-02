@@ -2,16 +2,14 @@
 // (o cliente só pede; range/cooldown/dano são decididos aqui) e no cliente em modo solo.
 import { EnemySim, SimEnemy } from './enemies';
 import {
-  ABILITIES, abilityDamage,
+  ABILITIES, abilityDamage, discSource, CombatStats,
   FIREBALL_SPEED, PUSH_RADIUS, PUSH_FORCE, CHAIN_RADIUS, CHAIN_MAX,
 } from '../defs/abilities';
 
-export interface CasterView {
+export interface CasterView extends CombatStats {
   id: number;
   x: number;
   z: number;
-  lvl: number;
-  luck: boolean;
 }
 
 const RANGE_TOLERANCE = 1.3;  // folga para latência (posição do cliente ~100ms atrás)
@@ -43,6 +41,11 @@ export class CombatSim {
     return !!e && e.state !== 'dead' && e.state !== 'surrender' && e.state !== 'flee';
   }
 
+  private hit(c: CasterView, key: string, targetId: number, scale = 1) {
+    const { dmg, crit } = abilityDamage(key, c, this.bumpMult(c.id));
+    this.sim.applyDamage(targetId, Math.round(dmg * scale), c.id, discSource(key, c.wpnKind), crit);
+  }
+
   cast(c: CasterView, key: string, targetId?: number): boolean {
     const ab = ABILITIES[key];
     if (!ab || key === 'cura') return false; // cura é local do cliente
@@ -53,8 +56,10 @@ export class CombatSim {
     const tgt = targetId !== undefined ? this.sim.enemies.get(targetId) : undefined;
     if (ab.needTarget) {
       if (!this.targetable(tgt)) return false;
+      // golpe usa o alcance da arma equipada (arco ataca de longe)
+      const range = key === 'golpe' ? c.wpnRange : ab.range;
       const d = Math.hypot(tgt.x - c.x, tgt.z - c.z);
-      if (d > ab.range * RANGE_TOLERANCE) return false;
+      if (d > range * RANGE_TOLERANCE) return false;
     }
 
     // validado — cobra cooldown e executa
@@ -64,7 +69,7 @@ export class CombatSim {
 
     switch (key) {
       case 'golpe': {
-        this.sim.applyDamage(tgt!.id, abilityDamage('golpe', c.lvl, this.bumpMult(c.id), c.luck), c.id);
+        this.hit(c, 'golpe', tgt!.id);
         break;
       }
       case 'bola': {
@@ -75,13 +80,13 @@ export class CombatSim {
           const e = this.sim.enemies.get(id);
           if (!this.targetable(e)) return;
           this.sim.events.push({ t: 'boom', x: e.x, z: e.z });
-          this.sim.applyDamage(id, abilityDamage('bola', c.lvl, this.bumpMult(c.id), c.luck), c.id);
+          this.hit(c, 'bola', id);
         } });
         break;
       }
       case 'relampago': {
         this.sim.events.push({ t: 'bolt', ax: c.x, az: c.z, ay: 2, bx: tgt!.x, bz: tgt!.z, by: 1.2 });
-        this.sim.applyDamage(tgt!.id, abilityDamage('relampago', c.lvl, this.bumpMult(c.id), c.luck), c.id);
+        this.hit(c, 'relampago', tgt!.id);
         let last: SimEnemy = tgt!;
         let chained = 0;
         for (const e of this.sim.enemies.values()) {
@@ -89,7 +94,7 @@ export class CombatSim {
           if (e === tgt || !this.targetable(e)) continue;
           if (Math.hypot(e.x - last.x, e.z - last.z) < CHAIN_RADIUS) {
             this.sim.events.push({ t: 'bolt', ax: last.x, az: last.z, ay: 1.2, bx: e.x, bz: e.z, by: 1.2 });
-            this.sim.applyDamage(e.id, Math.round(abilityDamage('relampago', c.lvl, this.bumpMult(c.id), c.luck) * 0.6), c.id);
+            this.hit(c, 'relampago', e.id, 0.6);
             last = e;
             chained++;
           }
@@ -102,7 +107,7 @@ export class CombatSim {
           if (!this.targetable(e)) continue;
           const d = Math.hypot(e.x - c.x, e.z - c.z);
           if (d < PUSH_RADIUS) {
-            this.sim.applyDamage(e.id, abilityDamage('empurrao', c.lvl, this.bumpMult(c.id), c.luck), c.id);
+            this.hit(c, 'empurrao', e.id);
             const n = d || 1;
             this.sim.knock(e.id, ((e.x - c.x) / n) * PUSH_FORCE, ((e.z - c.z) / n) * PUSH_FORCE);
           }

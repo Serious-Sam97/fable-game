@@ -60,18 +60,27 @@ export function makeHero() {
   cape.position.set(0, 1.72, -0.28);
   cape.geometry.translate(0, -0.62, 0);
 
-  // sword
-  const sword = new THREE.Group();
-  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.15, 0.03), new THREE.MeshLambertMaterial({ color: 0xd8dfe8 }));
-  blade.position.y = -0.78;
-  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.08), new THREE.MeshLambertMaterial({ color: 0xc8a24b }));
-  guard.position.y = -0.2;
-  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.06), new THREE.MeshLambertMaterial({ color: 0x3a2a12 }));
-  grip.position.y = -0.1;
-  sword.add(blade, guard, grip);
-  sword.position.set(0, -0.72, 0.02);
-  sword.rotation.x = Math.PI;
-  armR.add(sword);
+  // suporte de arma — o jogo encaixa aqui o modelo da arma equipada
+  const weaponMount = new THREE.Group();
+  weaponMount.position.set(0, -0.72, 0.02);
+  weaponMount.rotation.x = Math.PI;
+  armR.add(weaponMount);
+
+  // tatuagens arcanas de Vontade (brilham via bloom conforme a magia cresce)
+  const tattooMat = new THREE.MeshLambertMaterial({ color: 0x16243e, emissive: 0x3a8aff, emissiveIntensity: 0 });
+  const tattooMeshes = [];
+  for (const [side, py] of [[-1, -0.15], [1, -0.15], [-1, -0.32], [1, -0.32]]) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.27, 0.055, 0.03), tattooMat);
+    stripe.position.set(0, py, 0.14);
+    stripe.visible = false;
+    (side < 0 ? armL : armR).add(stripe);
+    tattooMeshes.push(stripe);
+  }
+  const chestTattoo = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.07, 0.03), tattooMat);
+  chestTattoo.position.set(0, 1.62, 0.26);
+  chestTattoo.visible = false;
+  g.add(chestTattoo);
+  tattooMeshes.push(chestTattoo);
 
   // morality: halo & horns (hidden by default)
   const halo = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.045, 8, 24),
@@ -89,7 +98,83 @@ export function makeHero() {
 
   g.add(torso, strap, belt, buckle, head, hair, eyeL, eyeR, shL, shR, armL, armR, legL, legR, cape, halo, horns);
   shadows(g);
-  return { group: g, armL, armR, legL, legR, cape, halo, horns, mats };
+  return { group: g, armL, armR, legL, legR, cape, halo, horns, mats, weaponMount, torso, shL, shR, tattooMat, tattooMeshes };
+}
+
+// ============================================================ weapon models
+export function makeWeaponModel(key) {
+  const g = new THREE.Group();
+  const M = (c, opts = {}) => new THREE.MeshLambertMaterial({ color: c, ...opts });
+  const grip = () => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, 0.06), M(0x3a2a12));
+    m.position.y = -0.08;
+    return m;
+  };
+  switch (key) {
+    case 'machado': {
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 1.0, 6), M(0x5a4028));
+      handle.position.y = -0.5;
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.26, 0.06), M(0x9aa0a8));
+      head.position.set(0.14, -0.85, 0);
+      const edge = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.07), M(0xd8dfe8));
+      edge.position.set(0.33, -0.85, 0);
+      g.add(handle, head, edge);
+      break;
+    }
+    case 'martelo': {
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 1.0, 6), M(0x4a3520));
+      handle.position.y = -0.5;
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.26, 0.26), M(0x777d88));
+      head.position.y = -0.92;
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.08, 0.28), M(0xc8a24b));
+      band.position.y = -0.92;
+      g.add(handle, head, band);
+      break;
+    }
+    case 'espada_longa': {
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.45, 0.03), M(0xe8eef8));
+      blade.position.y = -0.95;
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.06, 0.09), M(0xc8a24b));
+      guard.position.y = -0.22;
+      g.add(blade, guard, grip());
+      break;
+    }
+    case 'arco_cacador':
+    case 'arco_longo': {
+      const long = key === 'arco_longo';
+      const arc = new THREE.Mesh(
+        new THREE.TorusGeometry(long ? 0.62 : 0.5, 0.03, 6, 14, Math.PI * 1.05),
+        M(long ? 0x7a5a30 : 0x5a4028)
+      );
+      arc.rotation.z = -Math.PI * 0.52;
+      arc.position.y = -0.55;
+      const stringGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0.02, -0.55 + (long ? 0.62 : 0.5), 0),
+        new THREE.Vector3(0.02, -0.55 - (long ? 0.62 : 0.5), 0),
+      ]);
+      const string = new THREE.Line(stringGeo, new THREE.LineBasicMaterial({ color: 0xd8d0b8 }));
+      g.add(arc, string, grip());
+      break;
+    }
+    case 'cajado_arcano': {
+      const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.6, 6), M(0x4a3560));
+      rod.position.y = -0.65;
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10),
+        new THREE.MeshBasicMaterial({ color: 0x8ad0ff }));
+      orb.position.y = -1.5;
+      g.add(rod, orb);
+      break;
+    }
+    default: { // espada_gasta
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.15, 0.03), M(0xb8bcc2));
+      blade.position.y = -0.78;
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.08), M(0x8a6d2f));
+      guard.position.y = -0.2;
+      g.add(blade, guard, grip());
+    }
+  }
+  g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  return g;
 }
 
 // ============================================================ villagers / NPCs
