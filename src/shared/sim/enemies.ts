@@ -19,6 +19,10 @@ export type SimEvent =
   | { t: 'eleap'; id: number }
   | { t: 'eland'; id: number; pid: number; dmg: number }
   | { t: 'eheal'; id: number; targetId: number; amount: number }   // xamã curando aliado
+  | { t: 'ebomb'; id: number; x: number; z: number }               // besouro-bomba explodiu
+  | { t: 'ehowl'; id: number }                                     // uivo do lobo alfa
+  | { t: 'eslam'; id: number; x: number; z: number }               // pancada de área do troll
+  | { t: 'estun'; id: number }                                     // inimigo atordoado (parry)
   // efeitos visuais de magia — emitidos pelo CombatSim, renderizados por todos os clientes
   | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
   | { t: 'boom'; x: number; z: number }
@@ -42,6 +46,7 @@ export interface SimEnemy {
   leapFromX: number; leapFromZ: number; leapToX: number; leapToZ: number;
   targetPid: number | null;
   isLeader: boolean;
+  stunT: number;
 }
 
 /** snapshot enxuto enviado aos clientes (e usado pelo view local no modo solo) */
@@ -59,6 +64,7 @@ export class EnemySim {
   events: SimEvent[] = [];
   slowT = 0; // Tempo Lento: mágica de qualquer herói desacelera o mundo todo (co-op friendly)
   private nextId = 1;
+  private lastPlayers: SimPlayerView[] = [];
 
   constructor() {
     for (let i = 0; i < 10; i++) {
@@ -84,6 +90,11 @@ export class EnemySim {
     for (let i = 0; i < 2; i++) {
       this.spawn('xama', DARK_FOREST.x - 4 + i * 8, DARK_FOREST.z - 10);
     }
+    for (let i = 0; i < 4; i++) {
+      this.spawn('besouro_bomba', ORCHARD.x - 18 + i * 5, ORCHARD.z + 16 + (i % 2) * 6);
+    }
+    this.spawn('lobo_alfa', 95, 55);
+    this.spawn('troll', 105, -35); // colinas a leste do lago
   }
 
   spawn(type: string, x: number, z: number, isLeader = false): SimEnemy {
@@ -99,7 +110,7 @@ export class EnemySim {
       knockX: 0, knockZ: 0,
       leapCd: 0, leapT: 0,
       leapFromX: 0, leapFromZ: 0, leapToX: 0, leapToZ: 0,
-      targetPid: null, isLeader,
+      targetPid: null, isLeader, stunT: 0,
     };
     this.enemies.set(e.id, e);
     return e;
@@ -124,17 +135,40 @@ export class EnemySim {
       e.state = 'chase';
       e.targetPid = attackerPid;
       this.events.push({ t: 'aggro', id: e.id });
-      this.alertAllies(e);
+      if (ENEMY_DEFS[e.type].alpha) {
+        this.events.push({ t: 'ehowl', id: e.id });
+        this.alertAllies(e, 25);
+      } else {
+        this.alertAllies(e);
+      }
     }
     if (e.hp <= 0) this.die(e, attackerPid);
   }
 
   private die(e: SimEnemy, killerPid: number) {
+    if (e.state === 'dead') return;
+    // besouro-bomba explode ao morrer, não importa como
+    if (ENEMY_DEFS[e.type].bomber) {
+      const def = ENEMY_DEFS[e.type];
+      this.events.push({ t: 'ebomb', id: e.id, x: e.x, z: e.z });
+      for (const p of this.lastPlayers) {
+        if (p.dead || Math.hypot(p.x - e.x, p.z - e.z) >= 4.5) continue;
+        this.events.push({ t: 'eatk', id: e.id, pid: p.id, dmg: Math.round(def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0])) });
+      }
+    }
     e.state = 'dead';
     e.hp = 0;
     e.deadTimer = 0;
     e.targetPid = null;
     this.events.push({ t: 'edie', id: e.id, killerPid });
+  }
+
+  /** atordoa (parry do herói) — validado pelo servidor por proximidade */
+  stun(id: number, dur: number) {
+    const e = this.enemies.get(id);
+    if (!e || e.state === 'dead' || e.state === 'surrender') return;
+    e.stunT = Math.max(e.stunT, dur);
+    this.events.push({ t: 'estun', id: e.id });
   }
 
   knock(id: number, kx: number, kz: number) {
@@ -187,6 +221,7 @@ export class EnemySim {
   }
 
   update(dt: number, players: SimPlayerView[], nightF: number) {
+    this.lastPlayers = players;
     if (this.slowT > 0) this.slowT -= dt;
     const eDt = dt * (this.slowT > 0 ? 0.35 : 1);
     const toRemove: number[] = [];
@@ -209,6 +244,10 @@ export class EnemySim {
         const near = this.nearest(players, e.x, e.z);
         if (near) e.ry = Math.atan2(near.x - e.x, near.z - e.z);
         continue;
+      }
+      if (e.stunT > 0) {
+        e.stunT -= dt;
+        continue; // atordoado — parado no lugar
       }
       if (e.state === 'flee') {
         const near = this.nearest(players, e.x, e.z);
@@ -259,7 +298,12 @@ export class EnemySim {
           e.state = 'chase';
           e.targetPid = near.id;
           this.events.push({ t: 'aggro', id: e.id });
-          this.alertAllies(e); // grita por reforços — aliados próximos entram na briga
+          if (def.alpha) {
+            this.events.push({ t: 'ehowl', id: e.id });
+            this.alertAllies(e, 25); // o uivo do alfa convoca a matilha inteira
+          } else {
+            this.alertAllies(e); // grita por reforços — aliados próximos entram na briga
+          }
         } else {
           e.wanderTimer -= dt;
           if (e.wanderTimer <= 0) {
@@ -278,6 +322,12 @@ export class EnemySim {
           continue;
         }
         const dPlayer = Math.hypot(tgt.x - e.x, tgt.z - e.z);
+
+        // besouro-bomba: corre até o herói e se detona
+        if (def.bomber && dPlayer < 2.2) {
+          this.die(e, -1);
+          continue;
+        }
 
         // curandeiro: prioriza manter os aliados de pé em vez de lutar
         if (def.healer) {
@@ -328,7 +378,17 @@ export class EnemySim {
         } else {
           e.state = 'attack';
           e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z);
-          this.tryAttack(e, def, tgt, eDt);
+          // troll: pancada de área periódica (reusa o cooldown do salto)
+          if (def.slam && e.leapCd <= 0) {
+            e.leapCd = 9;
+            this.events.push({ t: 'eslam', id: e.id, x: e.x, z: e.z });
+            for (const p of players) {
+              if (p.dead || Math.hypot(p.x - e.x, p.z - e.z) >= 5.5) continue;
+              this.events.push({ t: 'eatk', id: e.id, pid: p.id, dmg: Math.round((def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0])) * 1.2) });
+            }
+          } else {
+            this.tryAttack(e, def, tgt, eDt);
+          }
         }
       } else if (e.state === 'return') {
         if (dHome < 1.5) { e.state = 'idle'; e.hp = e.maxHp; }
@@ -349,11 +409,11 @@ export class EnemySim {
     }
   }
 
-  private alertAllies(src: SimEnemy) {
+  private alertAllies(src: SimEnemy, radius = 10) {
     if (src.targetPid === null) return;
     for (const o of this.enemies.values()) {
       if (o === src || o.state !== 'idle') continue;
-      if (Math.hypot(o.x - src.x, o.z - src.z) < 10) {
+      if (Math.hypot(o.x - src.x, o.z - src.z) < radius) {
         o.state = 'chase';
         o.targetPid = src.targetPid;
         this.events.push({ t: 'aggro', id: o.id });

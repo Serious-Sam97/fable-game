@@ -196,6 +196,26 @@
   .invRow .equipped { font-size: 11px; color: #6fdc6f; font-style: italic; }
   #invPanel .closeHint { text-align: center; font-size: 11px; color: #8a7a55; margin-top: 10px; font-style: italic; }
 
+  /* ============ talentos ============ */
+  #talPanel { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-52%); width: 640px; max-height: 76vh; overflow-y: auto; padding: 16px 20px; display: none; pointer-events: auto; }
+  #talPanel h2 { font-family: 'IM Fell English SC', serif; font-size: 20px; color: #ffd24a; text-shadow: 1px 1px 0 #000; margin-bottom: 10px; }
+  #talCols { display: flex; gap: 14px; }
+  .talCol { flex: 1; }
+  .talCol h3 { font-size: 14px; color: #ffd24a; margin-bottom: 2px; }
+  .talCol .tpts { font-size: 11px; color: #a89468; font-family: Arial, sans-serif; margin-bottom: 8px; }
+  .talRow { border: 1px solid rgba(138,109,47,.35); border-radius: 5px; padding: 6px 8px; margin-bottom: 6px; }
+  .talRow .tname { font-size: 13px; color: #e8d5a0; font-weight: bold; }
+  .talRow .tdesc { font-size: 11px; color: #a89468; font-family: Arial, sans-serif; }
+  .talRow.learned { border-color: #6fdc6f; background: rgba(60,120,50,.12); }
+  .talRow.locked { opacity: .45; }
+  .talRow button {
+    font-family: 'IM Fell English', serif; font-size: 12px; padding: 3px 10px; cursor: pointer; margin-top: 4px;
+    background: linear-gradient(180deg, #7a2d0e, #4a1a06); color: #ffd9a0;
+    border: 1px solid #c8a24b; border-radius: 4px;
+  }
+  .talRow button:hover { background: linear-gradient(180deg, #9c3a12, #5c2108); }
+  #talPanel .closeHint { text-align: center; font-size: 11px; color: #8a7a55; margin-top: 10px; font-style: italic; }
+
   #moralWrap { margin: 14px 0 4px; }
   #moralWrap .lbl { display: flex; justify-content: space-between; font-size: 12px; color: #a89468; margin-bottom: 3px; }
   #moralBar { position: relative; height: 12px; border-radius: 6px; border: 1px solid #000;
@@ -342,6 +362,12 @@
     <div class="closeHint">Pressione I para fechar · armas dropam de inimigos</div>
   </div>
 
+  <div id="talPanel" class="panel">
+    <h2>Talentos</h2>
+    <div id="talCols"></div>
+    <div class="closeHint">Pressione T para fechar · 1 ponto por nível de disciplina</div>
+  </div>
+
   <div id="interact"><b>F</b><span id="interactTxt"></span></div>
   <div id="deathOverlay"><div>Você desmaiou</div><div style="font-size:16px;color:#ffb0a0;margin-top:10px;font-family:'IM Fell English',serif;font-style:italic">Os heróis nunca morrem de verdade…</div></div>
 
@@ -350,7 +376,7 @@
 
   <div id="help" class="panel">
     <b>WASD</b> mover &nbsp; <b>Espaço</b> pular &nbsp; <b>Shift</b> rolamento &nbsp; <b>Mouse</b> câmera &nbsp; <b>Tab</b> alvo &nbsp; <b>1-8</b> habilidades<br>
-    <b>F</b> interagir &nbsp; <b>C</b> personagem &nbsp; <b>I</b> inventário &nbsp; <b>M</b> música &nbsp; <b>Enter</b> chat &nbsp; <b>Clique</b> selecionar / falar
+    <b>Q (segurar)</b> bloquear/aparar &nbsp; <b>F</b> interagir &nbsp; <b>C</b> personagem &nbsp; <b>I</b> inventário &nbsp; <b>T</b> talentos &nbsp; <b>Enter</b> chat
   </div>
 
   <div id="plates"></div>

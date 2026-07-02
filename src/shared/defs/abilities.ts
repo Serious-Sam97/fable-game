@@ -34,12 +34,14 @@ export interface CombatStats {
   wil: number;        // Vontade (magia)
   luck: boolean;      // Amuleto da Sorte
   wpnKind: 'melee' | 'bow' | 'staff';
-  wpnDmg: number;     // mult da arma × raridade
+  wpnDmg: number;     // mult da arma × raridade × talentos
   wpnRange: number;   // alcance do ataque básico
-  spellMult: number;  // cajados amplificam magia
+  spellMult: number;  // cajados e talentos amplificam magia
+  critBonus: number;  // talento Olho Mortal (0..0.15)
+  chainBonus: number; // talento Tormenta (+1 cadeia no relâmpago)
 }
 
-export const critChance = (skl: number) => Math.min(0.4, 0.05 + skl * 0.015);
+export const critChance = (skl: number, bonus = 0) => Math.min(0.45, 0.05 + skl * 0.015 + bonus);
 export const discSource = (key: string, wpnKind: string): 'melee' | 'ranged' | 'magic' =>
   key === 'golpe' ? (wpnKind === 'bow' ? 'ranged' : 'melee') : 'magic';
 
@@ -58,6 +60,6 @@ export function abilityDamage(key: string, c: CombatStats, mult: number): { dmg:
     case 'empurrao': base = (8 + c.lvl + c.wil * 1.5) * c.spellMult; break;
     default: return { dmg: 0, crit: false };
   }
-  const crit = Math.random() < critChance(c.skl);
+  const crit = Math.random() < critChance(c.skl, c.critBonus ?? 0);
   return { dmg: Math.round(base * m * (crit ? 1.6 : 1)), crit };
 }

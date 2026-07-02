@@ -91,21 +91,24 @@ imperceptível e o servidor sobrevivendo a refresh dos dois.
 - [x] **XP tripartido: Força / Habilidade / Vontade** — cada acerto treina a disciplina
       da fonte do dano (melee/arco/magia); Força dá +vida e +dano físico, Habilidade
       dá +crítico (💥×1.6) e +dano de arco, Vontade dá +vontade e +dano mágico
-- [ ] Árvores de talento por linha (ex.: Vontade: Fogo→Inferno, Tempo Lento→Parar o Tempo)
+- [x] Árvores de talento (tecla T): 12 talentos em 3 árvores, 1 ponto por nível de
+      disciplina, pré-requisito em cadeia; bônus validados/clampados no servidor
 - [x] A **aparência do herói muda**: Força alarga ombros/torso, Vontade acende
       tatuagens arcanas com bloom — sincronizado no multiplayer; falta: idade/cicatrizes
 
 ### Combate
-- [ ] Bloqueio e parry com timing; **esquiva (rolamento Shift) com stamina** ✅
-      (i-frames de 0.45s, custo sobe com o peso da armadura)
+- [x] **Bloqueio (Q) e parry**: bloquear reduz 60% (custa fôlego); na janela de
+      0.3s vira parry — dano zero e ATORDOA o atacante 1.5s (validado no servidor);
+      **rolamento (Shift)** com i-frames e custo por peso ✅
 - [ ] Combos de melee (3 golpes encadeados), finalizadores em inimigos atordoados
 - [ ] **Arco com mira livre** (hoje é por alvo; segurar = tensionar fica p/ depois)
-- [ ] Efeitos de status: queimadura, congelamento, veneno, atordoamento, medo
-- [ ] Inimigos novos: **bandido arqueiro** ✅ (atira a 16m e mantém distância) e
-      **xamã hobbe** ✅ (cura aliados feridos, recua do herói); falta: besouro-bomba,
-      lobo alfa, espantalho vivo, troll de pedra
-- [ ] IA de grupo: **chamar reforços** ✅ (aggro alerta aliados em 10m); falta:
-      flanquear e patrulhas com rotas
+- [ ] Efeitos de status: queimadura, congelamento, veneno, medo (atordoamento ✅)
+- [x] Inimigos novos: **bandido arqueiro** (kita a 7m), **xamã hobbe** (cura aliados),
+      **besouro-bomba** (explode ao alcançar ou morrer), **lobo alfa** (uivo convoca
+      a matilha em 25m) e **troll de pedra** (mini-boss, pancada de área a cada 9s);
+      falta: espantalho vivo
+- [ ] IA de grupo: **chamar reforços** ✅ / **uivo do alfa** ✅; falta: flanquear e
+      patrulhas com rotas
 
 **Pronto quando:** dois builds diferentes (guerreiro tanque × mago de vidro) jogam a mesma
 dungeon de formas completamente diferentes.

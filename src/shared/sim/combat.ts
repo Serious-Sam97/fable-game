@@ -89,8 +89,9 @@ export class CombatSim {
         this.hit(c, 'relampago', tgt!.id);
         let last: SimEnemy = tgt!;
         let chained = 0;
+        const maxChain = CHAIN_MAX + Math.round(c.chainBonus ?? 0); // talento Tormenta
         for (const e of this.sim.enemies.values()) {
-          if (chained >= CHAIN_MAX) break;
+          if (chained >= maxChain) break;
           if (e === tgt || !this.targetable(e)) continue;
           if (Math.hypot(e.x - last.x, e.z - last.z) < CHAIN_RADIUS) {
             this.sim.events.push({ t: 'bolt', ax: last.x, az: last.z, ay: 1.2, bx: e.x, bz: e.z, by: 1.2 });

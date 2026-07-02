@@ -30,6 +30,8 @@ export interface PlayerState {
   wpnDmg: number;
   wpnRange: number;
   spellMult: number;
+  critBonus: number;   // talento Olho Mortal (clampado 0..0.15)
+  chainBonus: number;  // talento Tormenta (clampado 0..1)
   // armadura equipada (só visual para os outros; defesa é aplicada localmente)
   aHead: string;
   aChest: string;
@@ -47,6 +49,7 @@ export type ClientMsg =
   | { t: 'login'; name: string; fresh: boolean }   // fresh = "Novo Jogo": descarta o personagem salvo
   | { t: 'save'; data: unknown }                   // blob de progresso persistido por nome no SQLite
   | { t: 'cast'; key: string; targetId?: number }  // validado pelo CombatSim no servidor
+  | { t: 'stun'; id: number }                      // parry — servidor valida proximidade
   | { t: 'chat'; text: string }
   | { t: 'surrender' }
   | { t: 'leaderResolve'; spare: boolean }

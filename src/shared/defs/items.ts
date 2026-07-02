@@ -74,6 +74,7 @@ export interface ItemInstance { wpn?: string; arm?: string; rar: string; }
 // chance de drop de arma por tipo de inimigo (rolado por quem matou)
 const DROP_CHANCE: Record<string, number> = {
   besouro: 0.07, lobo: 0.14, bandido: 0.2, hobbe: 0.18, chefe: 1, balverine: 1,
+  besouro_bomba: 0.05, arqueiro: 0.22, xama: 0.2, lobo_alfa: 0.6, troll: 1,
 };
 
 function rollRarity(enemyLvl: number): string {

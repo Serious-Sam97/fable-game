@@ -19,6 +19,9 @@ export interface EnemyDef {
   ranged?: boolean;  // ataca de longe e mantém distância (kite)
   minR?: number;     // distância mínima que o atirador tenta manter
   healer?: boolean;  // cura aliados feridos em vez de lutar
+  bomber?: boolean;  // explode ao alcançar o herói (ou ao morrer)
+  alpha?: boolean;   // uivo de aggro alerta a matilha num raio maior
+  slam?: boolean;    // pancada de área periódica (troll)
 }
 
 export const ENEMY_DEFS: Record<string, EnemyDef> = {
@@ -55,6 +58,21 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
   balverine: {
     name: 'Balverine Ancião', lvl: 9, hp: 620, dmg: [16, 24], xp: 420, gold: [90, 120],
     renown: 12, speed: 6.4, aggro: 26, atkR: 2.8, atkCd: 1.6, icon: '👹', plateH: 4.4, respawn: 0,
+  },
+  besouro_bomba: {
+    name: 'Besouro-Bomba', lvl: 3, hp: 30, dmg: [16, 24], xp: 30, gold: [0, 2],
+    renown: 0, speed: 5.4, aggro: 12, atkR: 2.0, atkCd: 9, icon: '💣', plateH: 1.0, respawn: 18,
+    bomber: true,
+  },
+  lobo_alfa: {
+    name: 'Lobo Alfa', lvl: 6, hp: 220, dmg: [10, 16], xp: 130, gold: [4, 10],
+    renown: 3, speed: 6.0, aggro: 15, atkR: 2.4, atkCd: 1.4, icon: '🐺', plateH: 2.2, respawn: 45,
+    alpha: true,
+  },
+  troll: {
+    name: 'Troll de Pedra', lvl: 8, hp: 800, dmg: [22, 32], xp: 500, gold: [80, 120],
+    renown: 8, speed: 3.2, aggro: 13, atkR: 3.4, atkCd: 2.8, icon: '🗿', plateH: 5.2, respawn: 120,
+    slam: true,
   },
 };
 

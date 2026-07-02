@@ -9,8 +9,9 @@ import {
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel, applyArmorTo,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel, applyArmorTo, makeTroll,
 } from './models';
+import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
 import { WEAPONS, ARMORS, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
@@ -43,11 +44,14 @@ const player = {
   inventory: [],
   equipped: { wpn: 'espada_gasta', rar: 'comum' },
   armor: { head: null, chest: null, legs: null, boots: null },
-  // fôlego para o rolamento (Shift) — armadura pesada cansa mais
+  talents: {},
+  // fôlego para rolamento (Shift) e bloqueio (Q) — armadura pesada cansa mais
   stam: 100, maxStam: 100,
   rollT: 0, rollDirX: 0, rollDirZ: 1, invulnT: 0,
   lastDirX: 0, lastDirZ: 1,
+  blocking: false, blockStartT: -99,
 };
+const hasTalent = (k) => !!player.talents[k];
 player.pos.y = terrainHeight(player.pos.x, player.pos.z);
 const xpToNext = (lvl) => 90 + lvl * 60;
 const maxHpFor = (lvl) => 110 + (lvl - 1) * 24;
@@ -70,10 +74,14 @@ const discXpToNext = (lvl) => 60 + lvl * 55;
 const DISC_LABEL = { str: '💪 Força', skl: '🎯 Habilidade', wil: '✨ Vontade' };
 
 function recomputeMaxes() {
-  player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8;
-  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5;
+  player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8
+    + (hasTalent('vigor') ? 30 : 0) + (hasTalent('colosso') ? 60 : 0);
+  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5
+    + (hasTalent('poco_arcano') ? 20 : 0);
+  player.maxStam = 100 + (hasTalent('folego') ? 25 : 0);
   player.hp = Math.min(player.hp, player.maxHp);
   player.will = Math.min(player.will, player.maxWill);
+  player.stam = Math.min(player.stam, player.maxStam);
 }
 
 function gainDiscXP(kind, amt) {
@@ -97,7 +105,7 @@ function equippedStats() {
   return { def: w, rar, dmg: w.mult * rar.mult, range: w.range, kind: w.kind, spellMult: w.spellBoost ?? 1 };
 }
 function totalDefense() {
-  let d = 0;
+  let d = hasTalent('pele_de_ferro') ? 3 : 0;
   for (const it of Object.values(player.armor)) {
     if (it && ARMORS[it.arm]) d += ARMORS[it.arm].def * rarityOf(it.rar).mult;
   }
@@ -111,15 +119,22 @@ function totalWeight() {
   return w;
 }
 const damageReduction = () => { const d = totalDefense(); return d / (d + 25); };
-const rollCost = () => 30 + totalWeight() * 2.5;
+const rollCost = () => (30 + totalWeight() * 2.5) * (hasTalent('reflexos') ? 0.75 : 1);
 const stamRegen = () => Math.max(6, 16 - totalWeight() * 1.2);
 function combatStats() {
   const eq = equippedStats();
+  // talentos entram nos multiplicadores declarados (o servidor clampa em faixas sãs)
+  const wpnDmg = eq.dmg
+    * (eq.kind === 'melee' && hasTalent('golpe_brutal') ? 1.15 : 1)
+    * (eq.kind === 'bow' && hasTalent('tiro_certeiro') ? 1.15 : 1);
   return {
     lvl: player.level,
     str: player.disc.str.lvl, skl: player.disc.skl.lvl, wil: player.disc.wil.lvl,
     luck: player.luckCharm,
-    wpnKind: eq.kind, wpnDmg: eq.dmg, wpnRange: eq.range, spellMult: eq.spellMult,
+    wpnKind: eq.kind, wpnDmg, wpnRange: eq.range,
+    spellMult: eq.spellMult * (hasTalent('chama_viva') ? 1.15 : 1),
+    critBonus: hasTalent('olho_mortal') ? 0.08 : 0,
+    chainBonus: hasTalent('tormenta') ? 1 : 0,
   };
 }
 
@@ -203,6 +218,9 @@ const MAKERS = {
   hobbe: () => makeHobbe(),
   xama: () => makeHobbe({ shaman: true }),
   balverine: () => makeBalverine(),
+  besouro_bomba: () => makeBeetle({ bomb: true }),
+  lobo_alfa: () => makeBeast({ color: 0x2e3340, scale: 1.55, tail: true }),
+  troll: () => makeTroll(),
 };
 
 // simulação local — autoritativa apenas OFFLINE; online o servidor é a verdade
@@ -309,9 +327,33 @@ function processSimEvents() {
           );
         }
         if (ev.pid === myPid()) {
-          damagePlayer(ev.dmg);
+          damagePlayer(ev.dmg, v);
           if (!net.connected) combatLocal.notePlayerHit(0);
         }
+        break;
+      }
+      case 'ebomb': {
+        const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z) + 0.8, ev.z);
+        explosion(p, 0xff5a1a);
+        ringEffect(p, 0xff8a2a, 6);
+        noiseBurst(0.3, 0.09);
+        if (player.pos.distanceTo(p) < 12) shake = 0.5;
+        break;
+      }
+      case 'ehowl': {
+        if (v) floatText(v.pos, '🐺 AUUUUU!', '#c8d8ff', 22);
+        beep(300, 0.9, 'sine', 0.07, 180);
+        break;
+      }
+      case 'eslam': {
+        const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z), ev.z);
+        ringEffect(p, 0x9a8a6a, 7);
+        noiseBurst(0.35, 0.1);
+        if (player.pos.distanceTo(p) < 14) shake = 0.6;
+        break;
+      }
+      case 'estun': {
+        if (v) floatText(v.pos, '💫 atordoado', '#ffe9a8', 16);
         break;
       }
       case 'eheal': {
@@ -569,11 +611,30 @@ function checkQ2Done() {
   }
 }
 
-function damagePlayer(dmg, srcName = '') {
+function requestStun(enemyId) {
+  if (net.connected) sendMsg({ t: 'stun', id: enemyId });
+  else localSim.stun(enemyId, 1.5);
+}
+
+function damagePlayer(dmg, attacker = null) {
   if (player.dead) return;
   if (player.invulnT > 0) {
     floatText(player.pos, 'esquivou!', '#e8d05a', 15);
     return;
+  }
+  // bloqueio (Q segurado): reduz 60%; na janela de 0.3s vira PARRY e atordoa
+  if (player.blocking && player.stam >= 8) {
+    if (attacker && time - player.blockStartT < 0.3) {
+      player.stam -= 4;
+      floatText(player.pos, '⚔️ APARADO!', '#ffe9a8', 20);
+      beep(1250, 0.14, 'square', 0.06, -250);
+      requestStun(attacker.id);
+      return;
+    }
+    player.stam -= 8;
+    dmg = Math.round(dmg * 0.4);
+    floatText(player.pos, 'bloqueado', '#c8c8c8', 12);
+    beep(420, 0.07, 'square', 0.04);
   }
   dmg = Math.max(1, Math.round(dmg * (1 - damageReduction())));
   player.hp -= dmg;
@@ -1046,6 +1107,62 @@ function toggleInventory() {
   else { renderInventory(); p.style.display = 'block'; }
 }
 
+// ============================================================ talents
+function talentsSpent(tree) {
+  return Object.keys(player.talents).filter((k) => TALENTS[k]?.tree === tree).length;
+}
+function talentPoints(tree) {
+  return player.disc[tree].lvl - talentsSpent(tree);
+}
+function canLearn(t) {
+  if (player.talents[t.key]) return false;
+  if (talentPoints(t.tree) <= 0) return false;
+  const treeList = talentsByTree(t.tree);
+  return treeList.every((o) => o.tier >= t.tier || player.talents[o.key]);
+}
+function learnTalent(key) {
+  const t = TALENTS[key];
+  if (!t || !canLearn(t)) return false;
+  player.talents[key] = true;
+  toast(`${t.icon} Talento aprendido: ${t.name}`);
+  beep(760, 0.15, 'sine', 0.06); setTimeout(() => beep(1020, 0.2, 'sine', 0.06), 140);
+  recomputeMaxes();
+  updateHeroBody();
+  renderTalents();
+  saveGame();
+  return true;
+}
+function renderTalents() {
+  const cols = $('talCols');
+  cols.innerHTML = '';
+  for (const tree of ['str', 'skl', 'wil']) {
+    const col = document.createElement('div');
+    col.className = 'talCol';
+    col.innerHTML = `<h3>${TREE_LABEL[tree]}</h3><div class="tpts">${talentPoints(tree)} ponto(s) — nível ${player.disc[tree].lvl}</div>`;
+    for (const t of talentsByTree(tree)) {
+      const row = document.createElement('div');
+      const learned = !!player.talents[t.key];
+      row.className = 'talRow' + (learned ? ' learned' : canLearn(t) ? '' : ' locked');
+      row.innerHTML = `<div class="tname">${t.icon} ${t.name}</div><div class="tdesc">${t.desc}</div>`;
+      if (learned) {
+        row.innerHTML += `<div class="tdesc" style="color:#6fdc6f">aprendido</div>`;
+      } else if (canLearn(t)) {
+        const b = document.createElement('button');
+        b.textContent = 'Aprender (1 pt)';
+        b.onclick = () => learnTalent(t.key);
+        row.appendChild(b);
+      }
+      col.appendChild(row);
+    }
+    cols.appendChild(col);
+  }
+}
+function toggleTalents() {
+  const p = $('talPanel');
+  if (p.style.display === 'block') p.style.display = 'none';
+  else { renderTalents(); p.style.display = 'block'; }
+}
+
 // ============================================================ character panel
 function updateCharPanel() {
   $('cTitle').textContent = playerTitle() + (player.morality <= -40 ? ' Temível' : player.morality >= 40 ? ' Bondoso' : '');
@@ -1147,11 +1264,17 @@ addEventListener('keydown', (ev) => {
     if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
     return;
   }
-  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; return; }
+  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; return; }
   if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
   if (ev.code === 'KeyC') { toggleCharPanel(); return; }
   if (ev.code === 'KeyI') { toggleInventory(); return; }
+  if (ev.code === 'KeyT') { toggleTalents(); return; }
   if (ev.code === 'ShiftLeft' || ev.code === 'ShiftRight') { tryRoll(); return; }
+  if (ev.code === 'KeyQ' && !ev.repeat) {
+    player.blocking = true;
+    player.blockStartT = time;
+    return;
+  }
   if (ev.code === 'KeyM') { toast(toggleMusic() ? '🎵 Música ligada' : '🔇 Música desligada'); return; }
   if (ev.code.startsWith('Digit')) {
     const n = +ev.code.slice(5);
@@ -1162,7 +1285,10 @@ addEventListener('keydown', (ev) => {
   }
   keys[ev.code] = true;
 });
-addEventListener('keyup', (ev) => { keys[ev.code] = false; });
+addEventListener('keyup', (ev) => {
+  keys[ev.code] = false;
+  if (ev.code === 'KeyQ') player.blocking = false;
+});
 
 let dragging = false, dragMoved = 0, lastMX = 0, lastMY = 0;
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -1239,6 +1365,7 @@ function buildSaveData() {
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
     disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
+    talents: player.talents,
   };
 }
 function saveGame() {
@@ -1263,8 +1390,8 @@ function applySaveData(data) {
   player.inventory = data.inventory ?? [];
   player.equipped = data.equipped && WEAPONS[data.equipped.wpn] ? data.equipped : { wpn: 'espada_gasta', rar: 'comum' };
   player.armor = data.armor ?? { head: null, chest: null, legs: null, boots: null };
-  player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8;
-  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5;
+  player.talents = data.talents ?? {};
+  recomputeMaxes();
   player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
   player.will = clamp(data.will ?? player.maxWill, 0, player.maxWill);
   player.pos.set(data.pos[0], 0, data.pos[1]);
@@ -1319,6 +1446,7 @@ function startGame(fromSave) {
         str: cs.str, skl: cs.skl, wil: cs.wil,
         wpn: player.equipped.wpn,
         wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, spellMult: cs.spellMult,
+        critBonus: cs.critBonus, chainBonus: cs.chainBonus,
         aHead: player.armor.head?.arm ?? '', aChest: player.armor.chest?.arm ?? '',
         aLegs: player.armor.legs?.arm ?? '', aBoots: player.armor.boots?.arm ?? '',
       };
@@ -1692,7 +1820,9 @@ function tick() {
   heroModel.legL.rotation.x = swing;
   heroModel.legR.rotation.x = -swing;
   heroModel.armL.rotation.x = -swing * 0.7;
-  if (player.swingT > 0) {
+  if (player.blocking) {
+    heroModel.armR.rotation.x = -1.5; // arma erguida em guarda
+  } else if (player.swingT > 0) {
     player.swingT -= dt;
     heroModel.armR.rotation.x = -2.4 * (player.swingT / 0.35);
   } else {
@@ -1703,7 +1833,7 @@ function tick() {
 
   // ---------- timers / regen ----------
   if (started && !player.dead) {
-    player.will = Math.min(player.maxWill, player.will + 4 * dt);
+    player.will = Math.min(player.maxWill, player.will + 4 * (hasTalent('serenidade') ? 1.5 : 1) * dt);
     player.stam = Math.min(player.maxStam, player.stam + stamRegen() * dt);
     if (time - player.lastCombat > 5) player.hp = Math.min(player.maxHp, player.hp + 3 * dt);
   }
@@ -1887,7 +2017,7 @@ addEventListener('beforeunload', saveGame);
 // debug / experimental hooks
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
-  gainDiscXP, addItem, updateHeroBody,
+  gainDiscXP, addItem, updateHeroBody, learnTalent,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

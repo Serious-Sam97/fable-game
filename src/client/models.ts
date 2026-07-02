@@ -458,11 +458,11 @@ export function makeBeast({ color = 0x7a5230, scale = 1, tail = false } = {}) {
 }
 
 // ============================================================ beetle
-export function makeBeetle() {
+export function makeBeetle({ bomb = false } = {}) {
   const g = new THREE.Group();
   const mats = [];
   const M = matMaker(mats);
-  const shell = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), M(0x25304a));
+  const shell = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), M(bomb ? 0x8a2418 : 0x25304a));
   shell.scale.set(1.25, 0.62, 1);
   shell.position.y = 0.32;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), M(0x161e30));
@@ -479,8 +479,51 @@ export function makeBeetle() {
     legs.push(leg); g.add(leg);
   }
   g.add(shell, head, hornM);
+  if (bomb) {
+    // pavio brilhante — aviso do que está por vir
+    const fuse = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffb02a }));
+    fuse.position.set(-0.35, 0.55, 0);
+    g.add(fuse);
+  }
   shadows(g);
   return { group: g, legs, mats };
+}
+
+// ============================================================ stone troll (mini-boss)
+export function makeTroll() {
+  const g = new THREE.Group();
+  const mats = [];
+  const M = matMaker(mats);
+  const stone = 0x7d8288, moss = 0x5a7a3a;
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 2.0, 1.2), M(stone));
+  body.position.y = 2.0; body.rotation.x = 0.25;
+  const mossPatch = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 1.25), M(moss));
+  mossPatch.position.y = 2.9; mossPatch.rotation.x = 0.25;
+  const head = new THREE.Mesh(new THREE.DodecahedronGeometry(0.55, 0), M(stone));
+  head.position.set(0, 3.3, 0.5);
+  const eyeGeo = new THREE.SphereGeometry(0.08, 6, 6);
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffb02a });
+  const eL = new THREE.Mesh(eyeGeo, eyeMat); eL.position.set(-0.2, 3.35, 0.95);
+  const eR = new THREE.Mesh(eyeGeo, eyeMat); eR.position.set(0.2, 3.35, 0.95);
+  const shGeo = new THREE.DodecahedronGeometry(0.6, 0);
+  const shL = new THREE.Mesh(shGeo, M(stone)); shL.position.set(-1.15, 2.9, 0);
+  const shR = new THREE.Mesh(shGeo, M(stone)); shR.position.set(1.15, 2.9, 0);
+  const armGeo = new THREE.BoxGeometry(0.5, 2.0, 0.5);
+  armGeo.translate(0, -0.85, 0);
+  const armL = new THREE.Mesh(armGeo, M(stone)); armL.position.set(-1.15, 2.8, 0.1); armL.rotation.x = 0.4;
+  const armR = new THREE.Mesh(armGeo.clone(), M(stone)); armR.position.set(1.15, 2.8, 0.1); armR.rotation.x = 0.4;
+  const fistGeo = new THREE.DodecahedronGeometry(0.42, 0);
+  const fL = new THREE.Mesh(fistGeo, M(stone)); fL.position.y = -1.9; armL.add(fL);
+  const fR = new THREE.Mesh(fistGeo, M(stone)); fR.position.y = -1.9; armR.add(fR);
+  const legGeo = new THREE.BoxGeometry(0.6, 1.1, 0.6);
+  legGeo.translate(0, -0.5, 0);
+  const legL = new THREE.Mesh(legGeo, M(stone)); legL.position.set(-0.5, 1.1, -0.1);
+  const legR = new THREE.Mesh(legGeo.clone(), M(stone)); legR.position.set(0.5, 1.1, -0.1);
+  g.add(body, mossPatch, head, eL, eR, shL, shR, armL, armR, legL, legR);
+  shadows(g);
+  return { group: g, armL, armR, legL, legR, mats, legs: [legL, legR] };
 }
 
 // ============================================================ chicken

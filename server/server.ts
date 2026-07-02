@@ -121,9 +121,11 @@ wss.on('connection', (ws, req) => {
             // atributos declarados pelo cliente, mas presos a faixas sãs
             str: clamp(s.str, 0, 50), skl: clamp(s.skl, 0, 50), wil: clamp(s.wil, 0, 50),
             wpnKind: s.wpnKind === 'bow' || s.wpnKind === 'staff' ? s.wpnKind : 'melee',
-            wpnDmg: clamp(s.wpnDmg, 0.5, 2.4),
+            wpnDmg: clamp(s.wpnDmg, 0.5, 3.0),
             wpnRange: clamp(s.wpnRange, 2, 30),
-            spellMult: clamp(s.spellMult, 1, 1.3),
+            spellMult: clamp(s.spellMult, 1, 1.6),
+            critBonus: clamp(s.critBonus, 0, 0.15),
+            chainBonus: clamp(s.chainBonus, 0, 1),
           },
           String(m.key),
           typeof m.targetId === 'number' ? m.targetId : undefined,
@@ -134,6 +136,13 @@ wss.on('connection', (ws, req) => {
         const text = String(m.text ?? '').trim().slice(0, CHAT_MAX);
         if (!text) break;
         broadcast({ t: 'chat', pid: id, name: p.state?.name ?? `Herói ${id}`, text });
+        break;
+      }
+      case 'stun': {
+        // parry: só vale se o herói está colado no inimigo
+        const s = p.state;
+        const e = sim.enemies.get(Number(m.id));
+        if (s && e && Math.hypot(e.x - s.x, e.z - s.z) < 4.5) sim.stun(e.id, 1.5);
         break;
       }
       case 'surrender': sim.surrenderLeader(); break;
