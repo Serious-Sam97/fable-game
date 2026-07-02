@@ -16,6 +16,9 @@ export interface EnemyDef {
   icon: string;
   plateH: number;
   respawn: number;
+  ranged?: boolean;  // ataca de longe e mantém distância (kite)
+  minR?: number;     // distância mínima que o atirador tenta manter
+  healer?: boolean;  // cura aliados feridos em vez de lutar
 }
 
 export const ENEMY_DEFS: Record<string, EnemyDef> = {
@@ -30,6 +33,16 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
   bandido: {
     name: 'Bandido', lvl: 4, hp: 130, dmg: [9, 14], xp: 70, gold: [8, 16],
     renown: 1, speed: 4.6, aggro: 14, atkR: 2.3, atkCd: 1.7, icon: '🗡️', plateH: 2.7, respawn: 24,
+  },
+  arqueiro: {
+    name: 'Bandido Arqueiro', lvl: 5, hp: 95, dmg: [8, 13], xp: 80, gold: [8, 16],
+    renown: 1, speed: 4.4, aggro: 17, atkR: 16, atkCd: 2.2, icon: '🏹', plateH: 2.7, respawn: 26,
+    ranged: true, minR: 7,
+  },
+  xama: {
+    name: 'Xamã Hobbe', lvl: 4, hp: 70, dmg: [4, 7], xp: 75, gold: [6, 12],
+    renown: 1, speed: 4.0, aggro: 12, atkR: 1.9, atkCd: 1.8, icon: '🪄', plateH: 2.1, respawn: 28,
+    healer: true,
   },
   chefe: {
     name: 'Rufião, Chefe Bandido', lvl: 6, hp: 240, dmg: [12, 18], xp: 150, gold: [30, 40],

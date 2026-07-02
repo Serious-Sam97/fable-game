@@ -43,19 +43,40 @@ export const RARITIES: Rarity[] = [
 ];
 export const rarityOf = (key: string) => RARITIES.find((r) => r.key === key) ?? RARITIES[0];
 
-export interface ItemInstance { wpn: string; rar: string; }
+// ---------------- armaduras ----------------
+export type ArmorSlot = 'head' | 'chest' | 'legs' | 'boots';
+
+export interface ArmorDef {
+  key: string;
+  name: string;
+  slot: ArmorSlot;
+  def: number;    // pontos de defesa — redução = def/(def+25)
+  weight: number; // 0 leve … 2 pesada — pesa na stamina do rolamento
+  icon: string;
+  tier: number;
+  price?: number;
+}
+
+export const ARMORS: Record<string, ArmorDef> = {
+  couro_capuz:   { key: 'couro_capuz', name: 'Capuz de Couro', slot: 'head', def: 2, weight: 0, icon: '🧢', tier: 1 },
+  couro_colete:  { key: 'couro_colete', name: 'Colete de Couro', slot: 'chest', def: 4, weight: 0, icon: '🦺', tier: 1, price: 80 },
+  couro_calcas:  { key: 'couro_calcas', name: 'Calças de Couro', slot: 'legs', def: 3, weight: 0, icon: '👖', tier: 1 },
+  couro_botas:   { key: 'couro_botas', name: 'Botas de Couro', slot: 'boots', def: 2, weight: 0, icon: '🥾', tier: 1 },
+  ferro_elmo:    { key: 'ferro_elmo', name: 'Elmo de Ferro', slot: 'head', def: 5, weight: 2, icon: '🪖', tier: 2 },
+  ferro_peitoral:{ key: 'ferro_peitoral', name: 'Peitoral de Ferro', slot: 'chest', def: 9, weight: 2, icon: '🛡️', tier: 2, price: 250 },
+  ferro_grevas:  { key: 'ferro_grevas', name: 'Grevas de Ferro', slot: 'legs', def: 6, weight: 2, icon: '⛓️', tier: 2 },
+  ferro_botas:   { key: 'ferro_botas', name: 'Botas de Ferro', slot: 'boots', def: 4, weight: 2, icon: '🥾', tier: 2 },
+};
+
+/** item de inventário: arma (wpn) OU armadura (arm), sempre com raridade */
+export interface ItemInstance { wpn?: string; arm?: string; rar: string; }
 
 // chance de drop de arma por tipo de inimigo (rolado por quem matou)
 const DROP_CHANCE: Record<string, number> = {
   besouro: 0.07, lobo: 0.14, bandido: 0.2, hobbe: 0.18, chefe: 1, balverine: 1,
 };
 
-export function rollDrop(enemyType: string, enemyLvl: number): ItemInstance | null {
-  if (Math.random() > (DROP_CHANCE[enemyType] ?? 0)) return null;
-  // arsenal disponível pesa contra o tier vs nível do inimigo
-  const pool = Object.values(WEAPONS).filter((w) => w.tier > 0 && w.tier <= Math.max(1, Math.ceil(enemyLvl / 3)));
-  if (!pool.length) return null;
-  const wpn = pool[Math.floor(Math.random() * pool.length)];
+function rollRarity(enemyLvl: number): string {
   // inimigos fortes puxam raridade pra cima (chefe/balverine nunca dropam comum)
   const minIdx = enemyLvl >= 6 ? 1 : 0;
   let total = 0;
@@ -63,12 +84,29 @@ export function rollDrop(enemyType: string, enemyLvl: number): ItemInstance | nu
   let roll = Math.random() * total;
   for (let i = minIdx; i < RARITIES.length; i++) {
     roll -= RARITIES[i].weight + enemyLvl;
-    if (roll <= 0) return { wpn: wpn.key, rar: RARITIES[i].key };
+    if (roll <= 0) return RARITIES[i].key;
   }
-  return { wpn: wpn.key, rar: 'comum' };
+  return 'comum';
+}
+
+export function rollDrop(enemyType: string, enemyLvl: number): ItemInstance | null {
+  if (Math.random() > (DROP_CHANCE[enemyType] ?? 0)) return null;
+  const maxTier = Math.max(1, Math.ceil(enemyLvl / 3));
+  const rar = rollRarity(enemyLvl);
+  if (Math.random() < 0.45) {
+    const pool = Object.values(ARMORS).filter((a) => a.tier <= maxTier + 1);
+    if (pool.length) return { arm: pool[Math.floor(Math.random() * pool.length)].key, rar };
+  }
+  const pool = Object.values(WEAPONS).filter((w) => w.tier > 0 && w.tier <= maxTier);
+  if (!pool.length) return null;
+  return { wpn: pool[Math.floor(Math.random() * pool.length)].key, rar };
+}
+
+export function itemDef(item: ItemInstance) {
+  return item.wpn ? WEAPONS[item.wpn] : item.arm ? ARMORS[item.arm] : undefined;
 }
 
 export function sellPrice(item: ItemInstance): number {
-  const w = WEAPONS[item.wpn];
-  return Math.round(rarityOf(item.rar).sell * (1 + (w?.tier ?? 0) * 0.5));
+  const d = itemDef(item);
+  return Math.round(rarityOf(item.rar).sell * (1 + (d?.tier ?? 0) * 0.5));
 }

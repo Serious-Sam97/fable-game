@@ -82,6 +82,8 @@
   .bar .fill { position: absolute; inset: 0; transform-origin: left; transition: transform .15s linear; }
   .bar.hp .fill { background: linear-gradient(180deg, #5fd65f, #1e7a1e); }
   .bar.mp .fill { background: linear-gradient(180deg, #5a8fe8, #234a9c); }
+  .bar.st { height: 6px; }
+  .bar.st .fill { background: linear-gradient(180deg, #e8d05a, #9c8a1e); }
   .bar .txt { position: absolute; inset: 0; font-size: 10px; text-align: center; line-height: 13px; color: #fff; text-shadow: 1px 1px 1px #000; font-family: Arial, sans-serif; }
   #targetFrame .portrait { background: radial-gradient(circle at 35% 30%, #8a3b3b, #3a1717); }
 
@@ -261,6 +263,7 @@
       <div class="uf-title" id="ptitle">Camponês</div>
       <div class="bar hp"><div class="fill" id="php"></div><div class="txt" id="phpTxt"></div></div>
       <div class="bar mp"><div class="fill" id="pwill"></div><div class="txt" id="pwillTxt"></div></div>
+      <div class="bar st"><div class="fill" id="pstam"></div></div>
     </div>
   </div>
 
@@ -319,6 +322,8 @@
     <div class="row"><span>Renome</span><span id="cRenown">0</span></div>
     <div class="row"><span>Galinhas chutadas</span><span id="cKicks">0</span></div>
     <div class="row"><span>Inimigos derrotados</span><span id="cKills">0</span></div>
+    <div class="row"><span>Defesa</span><span id="cDef">0</span></div>
+    <div class="row"><span>Peso da armadura</span><span id="cWeight">0</span></div>
     <div id="discs">
       <div class="disc str"><span class="dname">💪 Força</span><span class="dlvl" id="dStrLvl">0</span><div class="dbar"><div class="dfill" id="dStrFill"></div></div></div>
       <div class="disc skl"><span class="dname">🎯 Habilidade</span><span class="dlvl" id="dSklLvl">0</span><div class="dbar"><div class="dfill" id="dSklFill"></div></div></div>
@@ -344,7 +349,7 @@
   <div id="chatWrap" class="panel"><input id="chatInput" maxlength="200" placeholder="Diga algo a Albion… (Enter envia, Esc cancela)"></div>
 
   <div id="help" class="panel">
-    <b>WASD</b> mover &nbsp; <b>Espaço</b> pular &nbsp; <b>Mouse</b> câmera &nbsp; <b>Scroll</b> zoom &nbsp; <b>Tab</b> alvo &nbsp; <b>1-8</b> habilidades<br>
+    <b>WASD</b> mover &nbsp; <b>Espaço</b> pular &nbsp; <b>Shift</b> rolamento &nbsp; <b>Mouse</b> câmera &nbsp; <b>Tab</b> alvo &nbsp; <b>1-8</b> habilidades<br>
     <b>F</b> interagir &nbsp; <b>C</b> personagem &nbsp; <b>I</b> inventário &nbsp; <b>M</b> música &nbsp; <b>Enter</b> chat &nbsp; <b>Clique</b> selecionar / falar
   </div>
 

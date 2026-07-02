@@ -79,8 +79,9 @@ imperceptível e o servidor sobrevivendo a refresh dos dois.
 ### Equipamento & inventário
 - [x] **Armas visíveis no personagem**: espada gasta/longa, machado, martelo, 2 arcos e
       cajado — modelo 3D próprio, dano/alcance próprios, visíveis nos outros jogadores
-- [ ] Armaduras por slot (cabeça/peito/pernas/botas) **visíveis** e com peso
-      (leve = esquiva, pesada = defesa) — estilo Fable
+- [x] Armaduras por slot (cabeça/peito/pernas/botas) **visíveis** e com peso —
+      couro leve (rolamento barato) vs ferro pesado (defesa alta, fôlego caro);
+      redução = def/(def+25), sincronizadas no multiplayer
 - [x] Raridades (Comum→Lendário com cores e multiplicadores); drops por inimigo,
       chefes nunca dropam comum; falta: afixos e itens únicos com lore
 - [x] Inventário (tecla I) com equipar/vender e loja do Barnum vendendo armas;
@@ -95,13 +96,16 @@ imperceptível e o servidor sobrevivendo a refresh dos dois.
       tatuagens arcanas com bloom — sincronizado no multiplayer; falta: idade/cicatrizes
 
 ### Combate
-- [ ] **Bloqueio, esquiva (rolamento) e parry** com timing; stamina
+- [ ] Bloqueio e parry com timing; **esquiva (rolamento Shift) com stamina** ✅
+      (i-frames de 0.45s, custo sobe com o peso da armadura)
 - [ ] Combos de melee (3 golpes encadeados), finalizadores em inimigos atordoados
-- [ ] **Arco com mira livre** (segurar = tensionar, soltar = disparar)
+- [ ] **Arco com mira livre** (hoje é por alvo; segurar = tensionar fica p/ depois)
 - [ ] Efeitos de status: queimadura, congelamento, veneno, atordoamento, medo
-- [ ] Inimigos novos: bandido arqueiro, xamã hobbe (cura os outros!), besouro-bomba,
-      lobo alfa com matilha, espantalho vivo, troll de pedra (mini-boss de área)
-- [ ] IA de grupo: flanquear, recuar para curar, chamar reforços, patrulhas com rotas
+- [ ] Inimigos novos: **bandido arqueiro** ✅ (atira a 16m e mantém distância) e
+      **xamã hobbe** ✅ (cura aliados feridos, recua do herói); falta: besouro-bomba,
+      lobo alfa, espantalho vivo, troll de pedra
+- [ ] IA de grupo: **chamar reforços** ✅ (aggro alerta aliados em 10m); falta:
+      flanquear e patrulhas com rotas
 
 **Pronto quando:** dois builds diferentes (guerreiro tanque × mago de vidro) jogam a mesma
 dungeon de formas completamente diferentes.

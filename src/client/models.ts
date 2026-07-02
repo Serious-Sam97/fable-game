@@ -96,9 +96,68 @@ export function makeHero() {
   horns.add(h1, h2);
   horns.visible = false;
 
+  // suportes de armadura (cabeça/peito/pernas/botas) — o jogo pluga as peças aqui
+  const armorMounts = {
+    head: new THREE.Group(),
+    chest: new THREE.Group(),
+    legL: new THREE.Group(), legR: new THREE.Group(),
+    bootL: new THREE.Group(), bootR: new THREE.Group(),
+  };
+  head.add(armorMounts.head);
+  torso.add(armorMounts.chest);
+  legL.add(armorMounts.legL); legR.add(armorMounts.legR);
+  legL.add(armorMounts.bootL); legR.add(armorMounts.bootR);
+
   g.add(torso, strap, belt, buckle, head, hair, eyeL, eyeR, shL, shR, armL, armR, legL, legR, cape, halo, horns);
   shadows(g);
-  return { group: g, armL, armR, legL, legR, cape, halo, horns, mats, weaponMount, torso, shL, shR, tattooMat, tattooMeshes };
+  return { group: g, armL, armR, legL, legR, cape, halo, horns, mats, weaponMount, torso, shL, shR, tattooMat, tattooMeshes, armorMounts };
+}
+
+// ============================================================ armor pieces
+// aplica as peças visíveis nos suportes do herói — slots = { head?, chest?, legs?, boots? } (keys de ARMORS)
+export function applyArmorTo(model, slots) {
+  const m = model.armorMounts;
+  for (const k of Object.keys(m)) m[k].clear();
+  const mat = (iron) => new THREE.MeshLambertMaterial({ color: iron ? 0x9aa2ac : 0x7a5230 });
+  const trim = () => new THREE.MeshLambertMaterial({ color: 0xc8a24b });
+  if (slots.head) {
+    const iron = slots.head.startsWith('ferro');
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.3, 0.6), mat(iron));
+    cap.position.y = 0.24;
+    m.head.add(cap);
+    if (iron) {
+      const crest = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.16, 0.5), trim());
+      crest.position.y = 0.42;
+      m.head.add(crest);
+    }
+  }
+  if (slots.chest) {
+    const iron = slots.chest.startsWith('ferro');
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.97, 1.06, 0.56), mat(iron));
+    m.chest.add(plate);
+    if (iron) {
+      const emblem = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.06), trim());
+      emblem.position.set(0, 0.18, 0.29);
+      m.chest.add(emblem);
+    }
+  }
+  if (slots.legs) {
+    const iron = slots.legs.startsWith('ferro');
+    for (const mount of [m.legL, m.legR]) {
+      const cuisse = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.52, 0.34), mat(iron));
+      cuisse.position.y = -0.22;
+      mount.add(cuisse);
+    }
+  }
+  if (slots.boots) {
+    const iron = slots.boots.startsWith('ferro');
+    for (const mount of [m.bootL, m.bootR]) {
+      const boot = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.26, 0.44), mat(iron));
+      boot.position.set(0, -0.72, 0.05);
+      mount.add(boot);
+    }
+  }
+  model.group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
 }
 
 // ============================================================ weapon models
@@ -226,7 +285,7 @@ export function makeVillager({ robe = 0x2a4a7a, skin = 0xd8a878, hair = 0x888888
 }
 
 // ============================================================ bandit
-export function makeBandit({ leader = false } = {}) {
+export function makeBandit({ leader = false, archer = false } = {}) {
   const g = new THREE.Group();
   const mats = [];
   const M = matMaker(mats);
@@ -248,18 +307,30 @@ export function makeBandit({ leader = false } = {}) {
   legGeo.translate(0, -0.38, 0);
   const legL = new THREE.Mesh(legGeo, M(0x241f18)); legL.position.set(-0.22, 0.82, 0);
   const legR = new THREE.Mesh(legGeo.clone(), M(0x241f18)); legR.position.set(0.22, 0.82, 0);
-  // crude blade
-  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.95, 0.04), M(0x9aa0a8));
-  blade.position.set(0, -0.75, 0.15);
-  blade.rotation.x = Math.PI * 0.9;
-  armR.add(blade);
+  if (archer) {
+    // arco na mão + aljava nas costas
+    const bow = makeWeaponModel('arco_cacador');
+    bow.position.set(0, -0.72, 0.02);
+    bow.rotation.x = Math.PI;
+    armR.add(bow);
+    const quiver = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.6, 6), M(0x5a4028));
+    quiver.position.set(-0.2, 1.6, -0.32);
+    quiver.rotation.z = 0.3;
+    g.add(quiver);
+  } else {
+    // crude blade
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.95, 0.04), M(0x9aa0a8));
+    blade.position.set(0, -0.75, 0.15);
+    blade.rotation.x = Math.PI * 0.9;
+    armR.add(blade);
+  }
   g.add(torso, head, bandana, mask, armL, armR, legL, legR);
   shadows(g);
   return { group: g, armL, armR, legL, legR, mats, legs: [legL, legR] };
 }
 
 // ============================================================ hobbe (goblin)
-export function makeHobbe() {
+export function makeHobbe({ shaman = false } = {}) {
   const g = new THREE.Group();
   const mats = [];
   const M = matMaker(mats);
@@ -286,9 +357,24 @@ export function makeHobbe() {
   legGeo.translate(0, -0.18, 0);
   const legL = new THREE.Mesh(legGeo, M(0x4a3a20)); legL.position.set(-0.2, 0.42, 0);
   const legR = new THREE.Mesh(legGeo.clone(), M(0x4a3a20)); legR.position.set(0.2, 0.42, 0);
-  const club = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.05, 0.7, 6), M(0x5a4028));
-  club.position.set(0, -0.6, 0.1); club.rotation.x = Math.PI * 0.85;
-  armR.add(club);
+  if (shaman) {
+    // cajado tosco com orbe verde + cocar de penas
+    const staffRod = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 1.1, 5), M(0x4a3a20));
+    staffRod.position.set(0, -0.5, 0.1);
+    const orb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), new THREE.MeshBasicMaterial({ color: 0x6ee86e }));
+    orb.position.set(0, -1.05, 0.1);
+    armR.add(staffRod, orb);
+    for (let i = -1; i <= 1; i++) {
+      const feather = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.35, 4), M(i === 0 ? 0xd83a2a : 0xe8d05a));
+      feather.position.set(i * 0.14, 1.75, -0.05);
+      feather.rotation.x = -0.25;
+      g.add(feather);
+    }
+  } else {
+    const club = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.05, 0.7, 6), M(0x5a4028));
+    club.position.set(0, -0.6, 0.1); club.rotation.x = Math.PI * 0.85;
+    armR.add(club);
+  }
   g.add(body, belly, head, earL, earR, eL, eR, armL, armR, legL, legR);
   shadows(g);
   return { group: g, armL, armR, legL, legR, mats, legs: [legL, legR] };

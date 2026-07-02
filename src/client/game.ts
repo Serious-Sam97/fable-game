@@ -9,11 +9,11 @@ import {
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel, applyArmorTo,
 } from './models';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
-import { WEAPONS, rarityOf, rollDrop, sellPrice } from '../shared/defs/items';
+import { WEAPONS, ARMORS, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
@@ -42,6 +42,11 @@ const player = {
   disc: { str: { lvl: 0, xp: 0 }, skl: { lvl: 0, xp: 0 }, wil: { lvl: 0, xp: 0 } },
   inventory: [],
   equipped: { wpn: 'espada_gasta', rar: 'comum' },
+  armor: { head: null, chest: null, legs: null, boots: null },
+  // fôlego para o rolamento (Shift) — armadura pesada cansa mais
+  stam: 100, maxStam: 100,
+  rollT: 0, rollDirX: 0, rollDirZ: 1, invulnT: 0,
+  lastDirX: 0, lastDirZ: 1,
 };
 player.pos.y = terrainHeight(player.pos.x, player.pos.z);
 const xpToNext = (lvl) => 90 + lvl * 60;
@@ -91,6 +96,23 @@ function equippedStats() {
   const rar = rarityOf(player.equipped.rar);
   return { def: w, rar, dmg: w.mult * rar.mult, range: w.range, kind: w.kind, spellMult: w.spellBoost ?? 1 };
 }
+function totalDefense() {
+  let d = 0;
+  for (const it of Object.values(player.armor)) {
+    if (it && ARMORS[it.arm]) d += ARMORS[it.arm].def * rarityOf(it.rar).mult;
+  }
+  return d;
+}
+function totalWeight() {
+  let w = 0;
+  for (const it of Object.values(player.armor)) {
+    if (it && ARMORS[it.arm]) w += ARMORS[it.arm].weight;
+  }
+  return w;
+}
+const damageReduction = () => { const d = totalDefense(); return d / (d + 25); };
+const rollCost = () => 30 + totalWeight() * 2.5;
+const stamRegen = () => Math.max(6, 16 - totalWeight() * 1.2);
 function combatStats() {
   const eq = equippedStats();
   return {
@@ -113,6 +135,10 @@ function updateHeroBody() {
   heroModel.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + wil * 0.18) : 0;
   heroModel.weaponMount.clear();
   heroModel.weaponMount.add(makeWeaponModel(player.equipped.wpn));
+  applyArmorTo(heroModel, {
+    head: player.armor.head?.arm, chest: player.armor.chest?.arm,
+    legs: player.armor.legs?.arm, boots: player.armor.boots?.arm,
+  });
   const eq = equippedStats();
   $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
 }
@@ -172,8 +198,10 @@ const MAKERS = {
   besouro: () => makeBeetle(),
   lobo: () => makeBeast({ color: 0x555a66, scale: 1.1, tail: true }),
   bandido: () => makeBandit(),
+  arqueiro: () => makeBandit({ archer: true }),
   chefe: () => makeBandit({ leader: true }),
   hobbe: () => makeHobbe(),
+  xama: () => makeHobbe({ shaman: true }),
   balverine: () => makeBalverine(),
 };
 
@@ -270,13 +298,35 @@ function processSimEvents() {
         if (v) floatText(v.pos, '!', '#ff6a6a', 20);
         if (v && v.type === 'balverine') { noiseBurst(0.5, 0.09); beep(90, 0.7, 'sawtooth', 0.08, -30); }
         break;
-      case 'eatk':
+      case 'eatk': {
         if (v) v.swingT = 0.3;
+        // flecha visual dos atiradores — de quem atira até a vítima
+        if (v && v.def.ranged) {
+          const victim = ev.pid === myPid() ? player.pos : remoteHeroes.get(ev.pid)?.model.group.position;
+          if (victim) arrowStreak(
+            v.pos.clone().add(new THREE.Vector3(0, 1.8, 0)),
+            victim.clone().add(new THREE.Vector3(0, 1.2, 0))
+          );
+        }
         if (ev.pid === myPid()) {
           damagePlayer(ev.dmg);
           if (!net.connected) combatLocal.notePlayerHit(0);
         }
         break;
+      }
+      case 'eheal': {
+        const tv = enemyViews.get(ev.targetId);
+        if (tv) floatText(tv.pos, '+' + ev.amount, '#6ee86e', 16);
+        if (v && tv) {
+          const geo = new THREE.BufferGeometry().setFromPoints([
+            v.pos.clone().add(new THREE.Vector3(0, 1.5, 0)),
+            tv.pos.clone().add(new THREE.Vector3(0, 1.2, 0)),
+          ]);
+          const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x6ee86e, transparent: true, opacity: 0.9 }));
+          addEffect(line, 0.35, (fx, k) => { fx.mesh.material.opacity = 0.9 * (1 - k); });
+        }
+        break;
+      }
       case 'edmg': {
         // dano validado pela simulação — todos os clientes veem o número
         if (!v) break;
@@ -380,6 +430,12 @@ function explosion(pos, color = 0xff7a1a) {
   m.position.copy(pos);
   addEffect(m, 0.4, (fx, k) => { fx.mesh.scale.setScalar(1 + k * 4); fx.mesh.material.opacity = 0.9 * (1 - k); });
 }
+function arrowStreak(from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xcaa46a, transparent: true, opacity: 1 }));
+  addEffect(line, 0.18, (fx, k) => { fx.mesh.material.opacity = 1 - k; });
+}
+
 function lightningBolt(from, to) {
   const pts = [];
   const n = 7;
@@ -515,6 +571,11 @@ function checkQ2Done() {
 
 function damagePlayer(dmg, srcName = '') {
   if (player.dead) return;
+  if (player.invulnT > 0) {
+    floatText(player.pos, 'esquivou!', '#e8d05a', 15);
+    return;
+  }
+  dmg = Math.max(1, Math.round(dmg * (1 - damageReduction())));
   player.hp -= dmg;
   player.mult = 0;
   player.lastCombat = time;
@@ -522,6 +583,20 @@ function damagePlayer(dmg, srcName = '') {
   shake = Math.min(0.5, shake + dmg * 0.01);
   beep(200, 0.06, 'square', 0.04);
   if (player.hp <= 0) { player.hp = 0; playerDie(); }
+}
+
+function tryRoll() {
+  if (player.dead || !started || player.rollT > 0 || !player.onGround) return;
+  const cost = rollCost();
+  if (player.stam < cost) { errorMsg('Sem fôlego!'); return; }
+  player.stam -= cost;
+  player.rollT = 0.35;
+  player.invulnT = 0.45;
+  player.rollDirX = player.lastDirX;
+  player.rollDirZ = player.lastDirZ;
+  player.lastCombat = time;
+  noiseBurst(0.12, 0.04);
+  beep(300, 0.12, 'sine', 0.04, -120);
 }
 
 function gainXP(amt) {
@@ -832,6 +907,10 @@ function openShop() {
     const w = WEAPONS[wk];
     buttons.push({ label: `${w.icon} ${w.name} — ${w.price} 🪙`, cb: buy(w.price, () => addItem({ wpn: wk, rar: 'comum' })) });
   }
+  for (const ak of ['couro_colete', 'ferro_peitoral']) {
+    const a = ARMORS[ak];
+    buttons.push({ label: `${a.icon} ${a.name} — ${a.price} 🪙`, cb: buy(a.price, () => addItem({ arm: ak, rar: 'comum' })) });
+  }
   if (!player.luckCharm) buttons.push({ label: '🍀 Amuleto da Sorte — 300 🪙 (+8% dano)', cb: buy(300, () => { player.luckCharm = true; toast('Comprou: Amuleto da Sorte (+8% dano)'); saveGame(); }) });
   buttons.push(closeBtn);
   showDialog('Barnum, o Mercador',
@@ -866,29 +945,62 @@ function confrontLeader() {
 
 // ============================================================ inventory
 function addItem(item) {
-  const w = WEAPONS[item.wpn], rar = rarityOf(item.rar);
-  if (!w) return;
+  const d = itemDef(item), rar = rarityOf(item.rar);
+  if (!d) return;
   if (player.inventory.length >= 12) {
     const gold = sellPrice(item);
     player.gold += gold;
-    toast(`🎒 Inventário cheio — ${w.name} vendida (+${gold} 🪙)`);
+    toast(`🎒 Inventário cheio — ${d.name} vendida (+${gold} 🪙)`);
     return;
   }
   player.inventory.push(item);
-  toast(`🎁 Saque: ${w.icon} ${w.name} (${rar.name})`);
+  toast(`🎁 Saque: ${d.icon} ${d.name} (${rar.name})`);
   beep(980, 0.12, 'sine', 0.05); setTimeout(() => beep(1240, 0.16, 'sine', 0.05), 110);
   saveGame();
 }
 
+const SLOT_LABEL = { head: 'Cabeça', chest: 'Peito', legs: 'Pernas', boots: 'Botas' };
+
+function itemStatsText(item) {
+  const rar = rarityOf(item.rar);
+  if (item.wpn) {
+    const w = WEAPONS[item.wpn];
+    const kindTxt = w.kind === 'bow' ? 'treina Habilidade' : w.kind === 'staff' ? 'treina Vontade' : 'treina Força';
+    const boost = w.spellBoost ? ` · magia +${Math.round((w.spellBoost - 1) * 100)}%` : '';
+    return `dano ×${(w.mult * rar.mult).toFixed(2)} · alcance ${w.range}${boost} · ${kindTxt}`;
+  }
+  const a = ARMORS[item.arm];
+  return `${SLOT_LABEL[a.slot]} · defesa ${(a.def * rar.mult).toFixed(1)} · ${a.weight === 0 ? 'leve (rolamento barato)' : 'pesada (rolamento cansa)'}`;
+}
+
+function equipItem(item, idx) {
+  if (item.wpn) {
+    const old = player.equipped;
+    player.equipped = item;
+    player.inventory.splice(idx, 1);
+    player.inventory.push(old);
+  } else {
+    const slot = ARMORS[item.arm].slot;
+    const old = player.armor[slot];
+    player.armor[slot] = item;
+    player.inventory.splice(idx, 1);
+    if (old) player.inventory.push(old);
+  }
+  updateHeroBody();
+  renderInventory();
+  saveGame();
+  beep(600, 0.1, 'sine', 0.05);
+}
+
 function invRow(item, isEquipped, idx) {
-  const w = WEAPONS[item.wpn], rar = rarityOf(item.rar);
+  const d = itemDef(item);
+  if (!d) return document.createElement('div');
+  const rar = rarityOf(item.rar);
   const row = document.createElement('div');
   row.className = 'invRow';
-  const kindTxt = w.kind === 'bow' ? 'treina Habilidade' : w.kind === 'staff' ? 'treina Vontade' : 'treina Força';
-  const boost = w.spellBoost ? ` · magia +${Math.round((w.spellBoost - 1) * 100)}%` : '';
-  row.innerHTML = `<span class="iicon">${w.icon}</span><div class="iinfo">
-    <div class="iname" style="color:${rar.color}">${w.name} <small>(${rar.name})</small></div>
-    <div class="istats">dano ×${(w.mult * rar.mult).toFixed(2)} · alcance ${w.range}${boost} · ${kindTxt}</div></div>`;
+  row.innerHTML = `<span class="iicon">${d.icon}</span><div class="iinfo">
+    <div class="iname" style="color:${rar.color}">${d.name} <small>(${rar.name})</small></div>
+    <div class="istats">${itemStatsText(item)}</div></div>`;
   if (isEquipped) {
     const tag = document.createElement('span');
     tag.className = 'equipped';
@@ -897,16 +1009,7 @@ function invRow(item, isEquipped, idx) {
   } else {
     const bE = document.createElement('button');
     bE.textContent = 'Equipar';
-    bE.onclick = () => {
-      const old = player.equipped;
-      player.equipped = item;
-      player.inventory.splice(idx, 1);
-      player.inventory.push(old);
-      updateHeroBody();
-      renderInventory();
-      saveGame();
-      beep(600, 0.1, 'sine', 0.05);
-    };
+    bE.onclick = () => equipItem(item, idx);
     const bS = document.createElement('button');
     bS.textContent = `Vender ${sellPrice(item)}🪙`;
     bS.onclick = () => {
@@ -925,12 +1028,15 @@ function renderInventory() {
   const list = $('invList');
   list.innerHTML = '';
   list.appendChild(invRow(player.equipped, true, -1));
+  for (const slotItem of Object.values(player.armor)) {
+    if (slotItem) list.appendChild(invRow(slotItem, true, -1));
+  }
   player.inventory.forEach((it, i) => list.appendChild(invRow(it, false, i)));
   if (!player.inventory.length) {
     const empty = document.createElement('div');
     empty.className = 'istats';
     empty.style.cssText = 'padding:8px 4px;color:#a89468;font-family:Arial;font-size:12px';
-    empty.textContent = 'Mochila vazia — derrote inimigos para saquear armas.';
+    empty.textContent = 'Mochila vazia — derrote inimigos para saquear armas e armaduras.';
     list.appendChild(empty);
   }
 }
@@ -949,6 +1055,8 @@ function updateCharPanel() {
   $('cRenown').textContent = player.renown;
   $('cKicks').textContent = player.kicks;
   $('cKills').textContent = player.kills;
+  $('cDef').textContent = `${totalDefense().toFixed(0)} (${Math.round(damageReduction() * 100)}% redução)`;
+  $('cWeight').textContent = totalWeight() === 0 ? 'leve' : `${totalWeight()} (rolamento custa ${Math.round(rollCost())})`;
   $('dStrLvl').textContent = player.disc.str.lvl;
   $('dSklLvl').textContent = player.disc.skl.lvl;
   $('dWilLvl').textContent = player.disc.wil.lvl;
@@ -1043,6 +1151,7 @@ addEventListener('keydown', (ev) => {
   if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
   if (ev.code === 'KeyC') { toggleCharPanel(); return; }
   if (ev.code === 'KeyI') { toggleInventory(); return; }
+  if (ev.code === 'ShiftLeft' || ev.code === 'ShiftRight') { tryRoll(); return; }
   if (ev.code === 'KeyM') { toast(toggleMusic() ? '🎵 Música ligada' : '🔇 Música desligada'); return; }
   if (ev.code.startsWith('Digit')) {
     const n = +ev.code.slice(5);
@@ -1129,7 +1238,7 @@ function buildSaveData() {
     q1: { state: quests.q1.state, count: quests.q1.count },
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
-    disc: player.disc, inventory: player.inventory, equipped: player.equipped,
+    disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
   };
 }
 function saveGame() {
@@ -1153,6 +1262,7 @@ function applySaveData(data) {
   player.disc = data.disc ?? { str: { lvl: 0, xp: 0 }, skl: { lvl: 0, xp: 0 }, wil: { lvl: 0, xp: 0 } };
   player.inventory = data.inventory ?? [];
   player.equipped = data.equipped && WEAPONS[data.equipped.wpn] ? data.equipped : { wpn: 'espada_gasta', rar: 'comum' };
+  player.armor = data.armor ?? { head: null, chest: null, legs: null, boots: null };
   player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8;
   player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5;
   player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
@@ -1209,6 +1319,8 @@ function startGame(fromSave) {
         str: cs.str, skl: cs.skl, wil: cs.wil,
         wpn: player.equipped.wpn,
         wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, spellMult: cs.spellMult,
+        aHead: player.armor.head?.arm ?? '', aChest: player.armor.chest?.arm ?? '',
+        aLegs: player.armor.legs?.arm ?? '', aBoots: player.armor.boots?.arm ?? '',
       };
     },
     {
@@ -1440,6 +1552,11 @@ function updateRemoteHeroes(dt) {
       r.model.weaponMount.clear();
       r.model.weaponMount.add(makeWeaponModel(s.wpn));
     }
+    const armorSig = `${s.aHead}|${s.aChest}|${s.aLegs}|${s.aBoots}`;
+    if (r.armorSig !== armorSig) {
+      r.armorSig = armorSig;
+      applyArmorTo(r.model, { head: s.aHead || undefined, chest: s.aChest || undefined, legs: s.aLegs || undefined, boots: s.aBoots || undefined });
+    }
     const bulk = 1 + Math.min(s.str ?? 0, 12) * 0.045;
     r.model.shL.scale.setScalar(bulk);
     r.model.shR.scale.setScalar(bulk);
@@ -1531,8 +1648,20 @@ function tick() {
     const rx = -fz, rz = fx;
     let mx = fx * fw + rx * st, mz = fz * fw + rz * st;
     const ml = Math.hypot(mx, mz);
-    if (ml > 0) {
+    if (player.rollT > 0) {
+      // rolamento: dash rápido com i-frames e cambalhota
+      player.rollT -= dt;
+      const nx = player.pos.x + player.rollDirX * 17 * dt;
+      const nz = player.pos.z + player.rollDirZ * 17 * dt;
+      if (terrainHeight(nx, nz) > LAKE.waterY - 0.35 && Math.hypot(nx, nz) < WORLD_R) {
+        player.pos.x = nx; player.pos.z = nz;
+      }
+      heroModel.group.rotation.y = Math.atan2(player.rollDirX, player.rollDirZ);
+      heroModel.group.rotation.x = (1 - player.rollT / 0.35) * Math.PI * 2;
+      if (player.rollT <= 0) heroModel.group.rotation.x = 0;
+    } else if (ml > 0) {
       mx /= ml; mz /= ml;
+      player.lastDirX = mx; player.lastDirZ = mz;
       const speed = 9;
       const nx = player.pos.x + mx * speed * dt;
       const nz = player.pos.z + mz * speed * dt;
@@ -1545,7 +1674,7 @@ function tick() {
     } else {
       player.walkT *= 0.8;
     }
-    player.moving = ml > 0;
+    player.moving = ml > 0 || player.rollT > 0;
     const groundY = terrainHeight(player.pos.x, player.pos.z);
     if (keys.Space && player.onGround) { player.vy = 8.5; player.onGround = false; }
     if (!player.onGround) {
@@ -1575,8 +1704,10 @@ function tick() {
   // ---------- timers / regen ----------
   if (started && !player.dead) {
     player.will = Math.min(player.maxWill, player.will + 4 * dt);
+    player.stam = Math.min(player.maxStam, player.stam + stamRegen() * dt);
     if (time - player.lastCombat > 5) player.hp = Math.min(player.maxHp, player.hp + 3 * dt);
   }
+  if (player.invulnT > 0) player.invulnT -= dt;
   gcd = Math.max(0, gcd - dt);
   for (let i = 0; i < cooldowns.length; i++) cooldowns[i] = Math.max(0, cooldowns[i] - dt);
   if (player.multT > 0) { player.multT -= dt; if (player.multT <= 0) player.mult = 0; }
@@ -1658,6 +1789,7 @@ function tick() {
   if (started) {
     $('php').style.transform = `scaleX(${Math.max(0, player.hp / player.maxHp)})`;
     $('pwill').style.transform = `scaleX(${player.will / player.maxWill})`;
+    $('pstam').style.transform = `scaleX(${player.stam / player.maxStam})`;
     $('phpTxt').textContent = `${Math.ceil(player.hp)} / ${player.maxHp}`;
     $('pwillTxt').textContent = `${Math.floor(player.will)} / ${player.maxWill}`;
     $('plvl').textContent = player.level;

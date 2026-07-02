@@ -30,6 +30,11 @@ export interface PlayerState {
   wpnDmg: number;
   wpnRange: number;
   spellMult: number;
+  // armadura equipada (só visual para os outros; defesa é aplicada localmente)
+  aHead: string;
+  aChest: string;
+  aLegs: string;
+  aBoots: string;
 }
 
 export const CHAT_MAX = 200;

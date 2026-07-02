@@ -18,6 +18,7 @@ export type SimEvent =
   | { t: 'edie'; id: number; killerPid: number }
   | { t: 'eleap'; id: number }
   | { t: 'eland'; id: number; pid: number; dmg: number }
+  | { t: 'eheal'; id: number; targetId: number; amount: number }   // xamã curando aliado
   // efeitos visuais de magia — emitidos pelo CombatSim, renderizados por todos os clientes
   | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
   | { t: 'boom'; x: number; z: number }
@@ -73,9 +74,15 @@ export class EnemySim {
       this.spawn('bandido', BANDIT_CAMP.x + Math.cos(a) * (5 + rnd(i, 214) * 10), BANDIT_CAMP.z + Math.sin(a) * (5 + rnd(i, 215) * 10));
     }
     this.spawn('chefe', BANDIT_CAMP.x, BANDIT_CAMP.z + 3, true);
+    for (let i = 0; i < 2; i++) {
+      this.spawn('arqueiro', BANDIT_CAMP.x + 6 + i * 4, BANDIT_CAMP.z - 8 + i * 3);
+    }
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
       this.spawn('hobbe', DARK_FOREST.x + Math.cos(a) * (6 + rnd(i, 216) * 12), DARK_FOREST.z - 15 + Math.sin(a) * (6 + rnd(i, 217) * 10));
+    }
+    for (let i = 0; i < 2; i++) {
+      this.spawn('xama', DARK_FOREST.x - 4 + i * 8, DARK_FOREST.z - 10);
     }
   }
 
@@ -117,6 +124,7 @@ export class EnemySim {
       e.state = 'chase';
       e.targetPid = attackerPid;
       this.events.push({ t: 'aggro', id: e.id });
+      this.alertAllies(e);
     }
     if (e.hp <= 0) this.die(e, attackerPid);
   }
@@ -251,6 +259,7 @@ export class EnemySim {
           e.state = 'chase';
           e.targetPid = near.id;
           this.events.push({ t: 'aggro', id: e.id });
+          this.alertAllies(e); // grita por reforços — aliados próximos entram na briga
         } else {
           e.wanderTimer -= dt;
           if (e.wanderTimer <= 0) {
@@ -269,24 +278,57 @@ export class EnemySim {
           continue;
         }
         const dPlayer = Math.hypot(tgt.x - e.x, tgt.z - e.z);
+
+        // curandeiro: prioriza manter os aliados de pé em vez de lutar
+        if (def.healer) {
+          const ally = this.woundedAllyNear(e);
+          if (ally) {
+            const dA = Math.hypot(ally.x - e.x, ally.z - e.z);
+            e.attackTimer -= eDt;
+            if (dPlayer < 5) {
+              // herói em cima — recua sem parar de tentar curar
+              const d = dPlayer || 1;
+              e.x += ((e.x - tgt.x) / d) * def.speed * 0.7 * eDt;
+              e.z += ((e.z - tgt.z) / d) * def.speed * 0.7 * eDt;
+              e.walkT += eDt * def.speed * 1.6;
+            } else if (dA > 9) {
+              this.moveToward(e, ally.x, ally.z, def.speed, eDt);
+            } else {
+              e.state = 'attack';
+              e.ry = Math.atan2(ally.x - e.x, ally.z - e.z);
+              if (e.attackTimer <= 0) {
+                e.attackTimer = def.atkCd + 1.2;
+                const amount = 18;
+                ally.hp = Math.min(ally.maxHp, ally.hp + amount);
+                this.events.push({ t: 'eheal', id: e.id, targetId: ally.id, amount });
+              }
+            }
+            continue;
+          }
+        }
+
         if (e.type === 'balverine' && dPlayer > 6 && dPlayer < 16 && e.leapCd <= 0) {
           e.state = 'leap';
           e.leapT = 0; e.leapCd = 7;
           e.leapFromX = e.x; e.leapFromZ = e.z;
           e.leapToX = tgt.x; e.leapToZ = tgt.z;
           this.events.push({ t: 'eleap', id: e.id });
+        } else if (def.ranged && dPlayer < (def.minR ?? 6)) {
+          // atirador: recua para manter distância, sem parar de atirar
+          e.state = 'attack';
+          e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z);
+          const d = dPlayer || 1;
+          e.x += ((e.x - tgt.x) / d) * def.speed * 0.8 * eDt;
+          e.z += ((e.z - tgt.z) / d) * def.speed * 0.8 * eDt;
+          e.walkT += eDt * def.speed * 1.8;
+          this.tryAttack(e, def, tgt, eDt);
         } else if (dPlayer > def.atkR) {
           e.state = 'chase';
           this.moveToward(e, tgt.x, tgt.z, def.speed, eDt);
         } else {
           e.state = 'attack';
           e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z);
-          e.attackTimer -= eDt;
-          if (e.attackTimer <= 0) {
-            e.attackTimer = def.atkCd;
-            const dmg = Math.round(def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0]));
-            this.events.push({ t: 'eatk', id: e.id, pid: tgt.id, dmg });
-          }
+          this.tryAttack(e, def, tgt, eDt);
         }
       } else if (e.state === 'return') {
         if (dHome < 1.5) { e.state = 'idle'; e.hp = e.maxHp; }
@@ -296,6 +338,38 @@ export class EnemySim {
     }
 
     for (const id of toRemove) this.enemies.delete(id);
+  }
+
+  private tryAttack(e: SimEnemy, def: { atkCd: number; dmg: [number, number] }, tgt: SimPlayerView, eDt: number) {
+    e.attackTimer -= eDt;
+    if (e.attackTimer <= 0) {
+      e.attackTimer = def.atkCd;
+      const dmg = Math.round(def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0]));
+      this.events.push({ t: 'eatk', id: e.id, pid: tgt.id, dmg });
+    }
+  }
+
+  private alertAllies(src: SimEnemy) {
+    if (src.targetPid === null) return;
+    for (const o of this.enemies.values()) {
+      if (o === src || o.state !== 'idle') continue;
+      if (Math.hypot(o.x - src.x, o.z - src.z) < 10) {
+        o.state = 'chase';
+        o.targetPid = src.targetPid;
+        this.events.push({ t: 'aggro', id: o.id });
+      }
+    }
+  }
+
+  private woundedAllyNear(e: SimEnemy): SimEnemy | null {
+    let best: SimEnemy | null = null, bd = 20;
+    for (const o of this.enemies.values()) {
+      if (o === e || o.state === 'dead' || o.state === 'surrender' || o.state === 'flee') continue;
+      if (o.hp >= o.maxHp * 0.95) continue;
+      const d = Math.hypot(o.x - e.x, o.z - e.z);
+      if (d < bd) { bd = d; best = o; }
+    }
+    return best;
   }
 
   private moveToward(e: SimEnemy, tx: number, tz: number, speed: number, dt: number) {
