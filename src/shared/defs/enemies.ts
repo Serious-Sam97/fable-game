@@ -59,6 +59,10 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
     name: 'Balverine Ancião', lvl: 9, hp: 620, dmg: [16, 24], xp: 420, gold: [90, 120],
     renown: 12, speed: 6.4, aggro: 26, atkR: 2.8, atkCd: 1.6, icon: '👹', plateH: 4.4, respawn: 0,
   },
+  caranguejo: {
+    name: 'Caranguejo da Maré', lvl: 2, hp: 45, dmg: [3, 6], xp: 28, gold: [2, 5],
+    renown: 0, speed: 3.0, aggro: 8, atkR: 1.7, atkCd: 1.5, icon: '🦀', plateH: 1.1, respawn: 16,
+  },
   besouro_bomba: {
     name: 'Besouro-Bomba', lvl: 3, hp: 30, dmg: [16, 24], xp: 30, gold: [0, 2],
     renown: 0, speed: 5.4, aggro: 12, atkR: 2.0, atkCd: 9, icon: '💣', plateH: 1.0, respawn: 18,

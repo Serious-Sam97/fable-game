@@ -66,7 +66,8 @@ const cDay = new THREE.Color(0x8fc4ec), cDusk = new THREE.Color(0xe89a5a),
       cNight = new THREE.Color(0x0b1430), skyCol = new THREE.Color();
 const sunWarm = new THREE.Color(0xffc078), sunWhite = new THREE.Color(0xfff4dc);
 
-export function updateSky(dt, playerPos) {
+export function updateSky(dt, playerPos, dim = 0) {
+  // dim = 0..1 — tempo fechado (chuva) escurece o céu e aproxima a névoa
   SKY.dayT += dt / SKY.DAY_LEN;
   if (SKY.dayT >= 1) { SKY.dayT -= 1; SKY.day++; }
   const ang = SKY.dayT * Math.PI * 2;
@@ -87,13 +88,16 @@ export function updateSky(dt, playerPos) {
 
   if (sunAlt > 0) skyCol.lerpColors(cDusk, cDay, smoothstep(0, 0.42, sunAlt));
   else skyCol.lerpColors(cDusk, cNight, smoothstep(0, 0.3, -sunAlt));
+  if (dim > 0) skyCol.lerp(cStorm, dim * 0.55);
   scene.background.copy(skyCol);
   scene.fog.color.copy(skyCol);
-  scene.fog.near = lerp(55, 30, SKY.nightF);
-  scene.fog.far = lerp(280, 160, SKY.nightF);
+  scene.fog.near = lerp(55, 30, SKY.nightF) * (1 - dim * 0.35);
+  scene.fog.far = lerp(280, 160, SKY.nightF) * (1 - dim * 0.4);
 
-  hemi.intensity = lerp(0.95, 0.22, SKY.nightF);
+  sun.intensity *= 1 - dim * 0.55;
+  hemi.intensity = lerp(0.95, 0.22, SKY.nightF) * (1 - dim * 0.3);
 }
+const cStorm = new THREE.Color(0x5a6674);
 
 export function skyHour() {
   // dayT 0 = 6h

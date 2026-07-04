@@ -2,7 +2,7 @@
 // e no cliente como fallback solo. Sem Three.js, sem DOM: só números e eventos.
 import { ENEMY_DEFS } from '../defs/enemies';
 import { rnd } from '../math';
-import { BANDIT_CAMP, ORCHARD, DARK_FOREST } from '../terrain';
+import { BANDIT_CAMP, ORCHARD, DARK_FOREST, CRAB_BEACH } from '../terrain';
 
 export interface SimPlayerView {
   id: number;
@@ -101,6 +101,10 @@ export class EnemySim {
     }
     this.spawn('lobo_alfa', 95, 55);
     this.spawn('troll', 105, -35); // colinas a leste do lago
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      this.spawn('caranguejo', CRAB_BEACH.x + Math.cos(a) * (4 + rnd(i, 330) * 10), CRAB_BEACH.z + Math.sin(a) * (4 + rnd(i, 331) * 8));
+    }
   }
 
   spawn(type: string, x: number, z: number, isLeader = false): SimEnemy {

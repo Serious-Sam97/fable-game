@@ -4,12 +4,12 @@ import {
   beep, noiseBurst, startMusic, toggleMusic, clamp, lerp, rnd,
 } from './core';
 import {
-  WORLD_R, LAKE, terrainHeight, buildWorld, updateWorld,
-  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, colliders,
+  WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
+  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, colliders,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, applyArmorTo, makeTroll,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, applyArmorTo, makeTroll, makeCrab,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
@@ -150,9 +150,11 @@ function walkable(nx, nz) {
     }
     return false;
   }
-  // só a água FUNDA do lago bloqueia — vales secos longe dele são livres
-  const dL = Math.hypot(nx - LAKE.x, nz - LAKE.z);
-  if (dL < LAKE.r + 6 && terrainHeight(nx, nz) < LAKE.waterY - 0.3) return false;
+  // só água FUNDA bloqueia (lago e oceano) — vales secos são livres
+  for (const w of WATERS) {
+    const dW = Math.hypot(nx - w.x, nz - w.z);
+    if (dW < w.r + w.shore && terrainHeight(nx, nz) < w.waterY - 0.3) return false;
+  }
   return true;
 }
 
@@ -223,6 +225,7 @@ const quests = {
   q1: { state: 'available', count: 0, goal: 8 },                       // beetles — Guildmaster
   q2: { state: 'locked', count: 0, goal: 5, leaderResolved: false },   // bandits — Whisper
   q3: { state: 'locked', count: 0, goal: 1 },                          // balverine — Guildmaster
+  q4: { state: 'available', count: 0, goal: 8 },                       // crabs — Pescador Jonas
 };
 
 // ============================================================ NPCs
@@ -250,6 +253,10 @@ const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236,
 const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor' });
 addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true });
 addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true });
+// Porto Bruma
+const jonas = addNpc('Pescador Jonas', makeVillager({ robe: 0x3a5a6e, hair: 0x8a8a7a, beard: true }), PORT.x + 14, PORT.z + 1, { rot: -1.6, role: 'fisher' });
+addNpc('Mercadora Sal', makeVillager({ robe: 0x6e3a5a, hair: 0x2a2a2a, hat: 'hood' }), 221, 47.8, { rot: 0.6, role: 'vendor2' });
+addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x - 4, PORT.z + 10, { wander: true });
 
 // ============================================================ chickens
 const chickens = [];
@@ -281,6 +288,7 @@ const MAKERS = {
   besouro_bomba: () => makeBeetle({ bomb: true }),
   lobo_alfa: () => makeBeast({ color: 0x2e3340, scale: 1.55, tail: true }),
   troll: () => makeTroll(),
+  caranguejo: () => makeCrab(),
 };
 
 // simulação local — autoritativa apenas OFFLINE; online o servidor é a verdade
@@ -668,6 +676,12 @@ function questCredit(e) {
     centerMsg('O Balverine foi derrotado!', 'Retorne ao Mestre da Guilda');
     updateQuestUI(); saveGame();
   }
+  if (e.type === 'caranguejo' && quests.q4.state === 'active' && quests.q4.count < quests.q4.goal) {
+    quests.q4.count++;
+    floatText(e.pos, `Caranguejos: ${quests.q4.count}/${quests.q4.goal}`, '#8fd0ff', 13);
+    if (quests.q4.count >= quests.q4.goal) { quests.q4.state = 'done'; centerMsg('Maré Vermelha', 'Retorne ao Pescador Jonas'); }
+    updateQuestUI(); saveGame();
+  }
 }
 function checkQ2Done() {
   if (quests.q2.state === 'active' && quests.q2.count >= quests.q2.goal && quests.q2.leaderResolved) {
@@ -915,6 +929,8 @@ function updateQuestUI() {
   if (quests.q2.state === 'done') lines.push(`<b>O Acampamento dos Bandidos</b><br><span class="done">Retorne a Whisper</span>`);
   if (quests.q3.state === 'active') lines.push(`<b>A Fera da Floresta</b><br>Balverine: <span>${quests.q3.count}/1</span>`);
   if (quests.q3.state === 'done') lines.push(`<b>A Fera da Floresta</b><br><span class="done">Retorne ao Mestre da Guilda</span>`);
+  if (quests.q4.state === 'active') lines.push(`<b>Maré Vermelha</b><br>Caranguejos: <span class="${quests.q4.count >= quests.q4.goal ? 'done' : ''}">${quests.q4.count}/${quests.q4.goal}</span>`);
+  if (quests.q4.state === 'done') lines.push(`<b>Maré Vermelha</b><br><span class="done">Retorne ao Pescador Jonas</span>`);
   $('questTracker').style.display = lines.length ? 'block' : 'none';
   $('questText').innerHTML = lines.join('<hr style="border-color:rgba(138,109,47,.3);margin:6px 0">');
 
@@ -924,6 +940,8 @@ function updateQuestUI() {
   guildmaster.marker.material = makeTextSprite(quests.q1.state === 'done' || quests.q3.state === 'done' ? '?' : '!').material;
   whisper.marker.visible = (quests.q1.state === 'completed' && quests.q2.state !== 'completed' && quests.q2.state !== 'active') || quests.q2.state === 'done';
   whisper.marker.material = makeTextSprite(quests.q2.state === 'done' ? '?' : '!').material;
+  jonas.marker.visible = quests.q4.state === 'available' || quests.q4.state === 'done';
+  jonas.marker.material = makeTextSprite(quests.q4.state === 'done' ? '?' : '!').material;
 }
 
 // ============================================================ dialogs
@@ -1008,6 +1026,29 @@ function talkTo(npc) {
     }
   } else if (npc.role === 'vendor') {
     openShop();
+  } else if (npc.role === 'vendor2') {
+    openShopSal();
+  } else if (npc.role === 'fisher') {
+    if (quests.q4.state === 'available') {
+      showDialog('Maré Vermelha',
+        'Ah, um aventureiro! Os caranguejos da maré tomaram a praia ao norte e rasgam minhas redes toda santa manhã. Limpe 8 deles e este velho arco de família é seu.',
+        'Recompensa: 200 XP, 100 ouro, Arco Longo (Raro), +8 renome',
+        [{ label: 'Aceitar missão', cb: () => { quests.q4.state = 'active'; updateQuestUI(); centerMsg('Nova missão', 'Maré Vermelha'); saveGame(); } }, closeBtn]);
+    } else if (quests.q4.state === 'active') {
+      showDialog('Pescador Jonas', `Ainda ouço as garras estalando na praia… (${quests.q4.count}/${quests.q4.goal})`, '', [closeBtn]);
+    } else if (quests.q4.state === 'done') {
+      showDialog('Maré Vermelha', 'Pelas marés! As redes estão salvas. Toma — o arco era do meu avô, mas contigo ele caça de novo.',
+        'Recompensa: 200 XP, 100 ouro, Arco Longo (Raro), +8 renome',
+        [{ label: 'Completar missão', cb: () => {
+          quests.q4.state = 'completed';
+          gainXP(200); player.gold += 100; gainRenown(8); changeMorality(4);
+          addItem({ wpn: 'arco_longo', rar: 'raro' });
+          centerMsg('Missão completa!', 'Arco Longo (Raro) recebido');
+          updateQuestUI(); saveGame();
+        } }]);
+    } else {
+      showDialog('Pescador Jonas', 'O mar anda generoso desde que você limpou a praia. Bons ventos, herói.', '', [closeBtn]);
+    }
   } else {
     const good = player.morality >= 40, evil = player.morality <= -40;
     const lines = good ? ['Que auréola magnífica!', 'Um verdadeiro herói entre nós!', 'Abençoado seja!'] :
@@ -1042,6 +1083,39 @@ function openShop() {
   showDialog('Barnum, o Mercador',
     `"Uma pechincha fabulosa, amigo! Palavra de Barnum." — Você tem ${player.gold} 🪙`,
     '', buttons);
+}
+
+function openShopSal() {
+  const buy = (cost, cb) => () => {
+    if (player.gold < cost) { errorMsg('Ouro insuficiente'); openShopSal(); return; }
+    player.gold -= cost;
+    cb();
+    beep(1250, 0.09, 'sine', 0.05);
+    openShopSal();
+  };
+  const buttons = [
+    { label: '🧪 Poção de Vida — 50 🪙', cb: buy(50, () => { player.potions.hp++; toast('Comprou: Poção de Vida'); }) },
+    { label: '🧢 Capuz de Couro — 45 🪙', cb: buy(45, () => addItem({ arm: 'couro_capuz', rar: 'comum' })) },
+    { label: '👖 Calças de Couro — 60 🪙', cb: buy(60, () => addItem({ arm: 'couro_calcas', rar: 'comum' })) },
+    { label: '🥾 Botas de Ferro — 120 🪙', cb: buy(120, () => addItem({ arm: 'ferro_botas', rar: 'comum' })) },
+    { label: '⛓️ Grevas de Ferro — 180 🪙', cb: buy(180, () => addItem({ arm: 'ferro_grevas', rar: 'comum' })) },
+    closeBtn,
+  ];
+  showDialog('Mercadora Sal',
+    `"Direto dos navios, forasteiro — mercadoria que o Barnum nem sonha." — Você tem ${player.gold} 🪙`,
+    '', buttons);
+}
+
+function travelGate(fromGate) {
+  const other = GATES.find((g) => g !== fromGate);
+  if (!other) return;
+  ringEffect(player.pos, 0x7fe8ff, 7);
+  beep(420, 0.5, 'sine', 0.07, 480);
+  player.pos.set(other.x + 2.5, terrainHeight(other.x + 2.5, other.z + 2.5), other.z + 2.5);
+  ringEffect(player.pos, 0x7fe8ff, 7);
+  centerMsg('Portal Cullis', 'A magia antiga te carrega pelos ventos…');
+  setTimeout(() => beep(880, 0.4, 'sine', 0.06, -320), 350);
+  saveGame();
 }
 
 function confrontLeader() {
@@ -1274,6 +1348,9 @@ function nearestInteract() {
   if (ldr && ldr.state === 'surrender') {
     consider(ldr.pos.distanceTo(player.pos), 5, 'Decidir o destino do Rufião', confrontLeader);
   }
+  for (const g of GATES) {
+    consider(Math.hypot(g.x - player.pos.x, g.z - player.pos.z), 3.8, 'Atravessar o Portal Cullis ✨', () => travelGate(g));
+  }
   return best;
 }
 
@@ -1429,6 +1506,7 @@ function buildSaveData() {
     q1: { state: quests.q1.state, count: quests.q1.count },
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
+    q4: { state: quests.q4.state, count: quests.q4.count },
     disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
     talents: player.talents,
   };
@@ -1465,6 +1543,7 @@ function applySaveData(data) {
   Object.assign(quests.q1, data.q1);
   Object.assign(quests.q2, data.q2);
   Object.assign(quests.q3, data.q3);
+  if (data.q4) Object.assign(quests.q4, data.q4);
   if (!net.connected && (quests.q2.state === 'completed' || quests.q2.choice)) localSim.removeLeader();
   if (quests.q3.state === 'active') requestSpawnBalverine();
   updateMoralityVisuals();
@@ -1906,7 +1985,7 @@ function tick() {
 
   // ---------- world / entities ----------
   if (net.connected && net.serverDayT !== null) SKY.dayT = net.serverDayT; // hora do mundo é do servidor
-  updateSky(started ? dt : dt * 0.3, player.pos);
+  updateSky(started ? dt : dt * 0.3, player.pos, weather.rainF);
   updateWorld(time, dt, player.pos);
   if (started) {
     if (!net.connected) {
@@ -2077,7 +2156,7 @@ addEventListener('beforeunload', saveGame);
 // debug / experimental hooks
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
-  gainDiscXP, addItem, updateHeroBody, learnTalent, heroModel,
+  gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate, heroModel,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

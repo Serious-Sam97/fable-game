@@ -637,6 +637,56 @@ export function makeBeetle({ bomb = false } = {}) {
   return { group: g, legs, mats };
 }
 
+// ---------------------------------------------------------------- crab
+export function makeCrab() {
+  const g = new THREE.Group();
+  const mats = [];
+  const M = matMaker(mats);
+  const shellC = 0xc85a30;
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), M(shellC));
+  body.scale.set(1.35, 0.55, 1);
+  body.position.y = 0.35;
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.42, 8, 6), M(0xe8b88a));
+  belly.scale.set(1.3, 0.4, 0.95);
+  belly.position.y = 0.28;
+  // olhos em hastes
+  for (const sx of [-1, 1]) {
+    const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.3, 5), M(shellC));
+    stalk.position.set(sx * 0.18, 0.72, 0.32);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 6), new THREE.MeshBasicMaterial({ color: 0x1a1a1a }));
+    eye.position.set(sx * 0.18, 0.88, 0.34);
+    g.add(stalk, eye);
+  }
+  // garras
+  for (const sx of [-1, 1]) {
+    const armSeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.3, 3, 6), M(shellC));
+    armSeg.rotation.z = sx * 1.2;
+    armSeg.position.set(sx * 0.72, 0.38, 0.3);
+    const claw = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), M(0xd86a3a));
+    claw.scale.set(1.3, 0.8, 1);
+    claw.position.set(sx * 0.98, 0.42, 0.42);
+    const pincer = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.22, 5), M(0xe8b88a));
+    pincer.rotation.x = Math.PI / 2;
+    pincer.position.set(sx * 0.98, 0.46, 0.66);
+    g.add(armSeg, claw, pincer);
+  }
+  // pernas
+  const legGeo = new THREE.CapsuleGeometry(0.035, 0.3, 3, 5);
+  const legs = [];
+  for (let i = 0; i < 6; i++) {
+    const sx = i < 3 ? -1 : 1;
+    const leg = new THREE.Mesh(legGeo, M(shellC));
+    leg.position.set(sx * 0.55, 0.25, -0.25 + (i % 3) * 0.28);
+    leg.rotation.z = sx * 1.1;
+    legs.push(leg);
+    g.add(leg);
+  }
+  g.add(body, belly);
+  shadows(g);
+  return { group: g, legs, mats };
+}
+
 // ---------------------------------------------------------------- stone troll
 export function makeTroll() {
   const g = new THREE.Group();

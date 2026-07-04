@@ -119,17 +119,19 @@ dungeon de formas completamente diferentes.
 *De um mapa para uma Albion.*
 
 ### Expansão territorial
-- [ ] **Terreno em chunks com streaming** — mundo 5–10× maior sem custo de memória
-- [ ] Biomas: pântano nebuloso, montanhas nevadas, costa com praia/porto, campos dourados
-- [ ] **2ª cidade grande** (porto comercial) + aldeias menores, cada uma com identidade
-- [ ] **Dungeons com interiores**: cavernas de hobbes, cripta assombrada, forte bandido,
-      minas abandonadas — com puzzles simples, alavancas, baús trancados (chaves de prata!)
-- [ ] **Cullis Gates** — fast travel entre portais desbloqueados (lore de Fable)
+- [~] Mundo ~2× maior (raio 190→320) com costa leste e oceano; streaming em chunks
+      fica para quando o custo apertar
+- [x] Costa com praia/porto ✅ (oceano, areia, píer); outros biomas pendentes
+- [x] **2ª cidade — Porto Bruma** ✅ (docas, farol com facho giratório, barcos,
+      3 NPCs: Pescador Jonas c/ quest, Mercadora Sal c/ loja, Marujo Bento)
+- [ ] **Dungeons com interiores**: cavernas de hobbes, cripta, forte bandido, minas
+- [x] **Cullis Gates** ✅ — fast travel vila ↔ porto (F no portal, efeito + som)
 
 ### Vida
 - [ ] **NPCs com rotina**: acordam, trabalham, almoçam, vão à taverna, dormem
       (lojas fecham à noite!)
-- [ ] **Clima**: chuva, neblina, tempestade com raios — afeta visibilidade e spawns
+- [x] **Clima**: chuva determinística (mesma para todos no co-op, derivada da hora do
+      mundo) escurece o céu e aproxima a névoa; neblina/tempestade pendentes
 - [ ] Fauna ambiente: cervos (caçáveis), pássaros, peixes pulando
 - [ ] **Profissões de coleta**: pesca (minigame de timing), mineração, herbalismo, lenhador
 - [ ] **Crafting**: forja (armas/armaduras), alquimia (poções), cozinha (buffs)

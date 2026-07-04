@@ -1,9 +1,15 @@
 import * as THREE from 'three';
 import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core';
-import { WORLD_R, LAKE, BANDIT_CAMP, ORCHARD, DARK_FOREST, terrainHeight, distToPath } from '../shared/terrain';
+import {
+  WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES,
+  terrainHeight, distToPath,
+} from '../shared/terrain';
 
 // terreno é compartilhado com o servidor (shared/terrain); re-exportado para o resto do cliente
-export { WORLD_R, LAKE, BANDIT_CAMP, ORCHARD, DARK_FOREST, terrainHeight, distToPath };
+export { WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, terrainHeight, distToPath };
+
+// clima — determinístico a partir da hora do mundo: todos os clientes veem a mesma chuva
+export const weather = { rainF: 0, raining: false };
 
 // ============================================================ build
 const windowMats = [];   // glow at night
@@ -11,6 +17,9 @@ const lampLights = [];
 const flames = [];
 const smokes = [];
 let stars, moonSprite, sunSprite, fireflies, water, waterGeo;
+let rain, seaWater, lightBeam, lightBeamTarget;
+const boats = [];
+const gateGlows = [];
 const clouds = [];
 const butterflies = [];
 const birds = [];
@@ -26,16 +35,19 @@ export function buildWorld() {
   buildSkyObjects();
   buildVegetation();
   buildVillage();
+  buildPort();
+  buildGates();
   buildBanditCamp();
   buildOrchard();
   buildDarkForest();
   buildChests();
   buildAmbientLife();
+  buildRain();
 }
 
 // ------------------------------------------------ ground
 function buildGround() {
-  const geo = new THREE.PlaneGeometry(440, 440, 150, 150);
+  const geo = new THREE.PlaneGeometry(720, 720, 220, 220);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
   const colors = [];
@@ -48,8 +60,10 @@ function buildGround() {
     pos.setY(i, h);
     c.lerpColors(cGrass, cGrass2, vnoise(x * 0.18, z * 0.18));
     if (h > 7) c.lerp(cRock, Math.min(1, (h - 7) / 5));
-    const dL = Math.hypot(x - LAKE.x, z - LAKE.z);
-    if (dL < LAKE.r + 10) c.lerp(cSand, smoothstep(LAKE.r + 10, LAKE.r - 4, dL));
+    for (const w of WATERS) {
+      const dW = Math.hypot(x - w.x, z - w.z);
+      if (dW < w.r + w.shore) c.lerp(cSand, smoothstep(w.r + w.shore * 0.7, w.r - w.shore * 0.4, dW));
+    }
     const dP = distToPath(x, z);
     if (dP < 5) c.lerp(cDirt, smoothstep(5, 2.2, dP) * 0.85);
     colors.push(c.r, c.g, c.b);
@@ -83,6 +97,15 @@ function buildWater() {
     scene.add(reed);
   }
   MAP_FEATURES.push({ x: LAKE.x, z: LAKE.z, color: '#3a7a9c', r: 9 });
+  // oceano da costa leste — plano grande e calmo (as ondas ficam por conta do specular)
+  const seaGeo = new THREE.CircleGeometry(SEA.r + 60, 48);
+  seaGeo.rotateX(-Math.PI / 2);
+  seaWater = new THREE.Mesh(seaGeo, new THREE.MeshPhongMaterial({
+    color: 0x2e6a8e, transparent: true, opacity: 0.86, shininess: 140, specular: 0x9accee,
+  }));
+  seaWater.position.set(SEA.x, SEA.waterY, SEA.z);
+  scene.add(seaWater);
+  MAP_FEATURES.push({ x: 288, z: 0, color: '#2e6a8e', r: 26 });
 }
 
 // ------------------------------------------------ sky objects
@@ -184,22 +207,25 @@ function addTree(x, z, s, kind) {
 }
 
 function buildVegetation() {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 175; i++) {
     const a = rnd(i, 1) * Math.PI * 2;
-    const r = 24 + rnd(i, 2) * 155;
+    const r = 24 + rnd(i, 2) * 275;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (distToPath(x, z) < 4) continue;
     if (Math.hypot(x - LAKE.x, z - LAKE.z) < LAKE.r + 8) continue;
+    if (Math.hypot(x - PORT.x, z - PORT.z) < 26) continue; // porto limpo
     if (z > 60 && x < 20 && x > -50) continue; // dark forest area handled separately
     addTree(x, z, 0.8 + rnd(i, 3) * 0.8, rnd(i, 4) > 0.6 ? 'pine' : 'oak');
   }
   // rocks
   const rockMat = lambert(0x7d7d7d);
-  for (let i = 0; i < 26; i++) {
+  for (let i = 0; i < 42; i++) {
     const a = rnd(i + 100, 1) * Math.PI * 2;
-    const r = 16 + rnd(i + 100, 2) * 160;
+    const r = 16 + rnd(i + 100, 2) * 290;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     const s = 0.5 + rnd(i + 100, 3) * 1.5;
+    if (terrainHeight(x, z) < SEA.waterY + 0.2) continue; // nada de pedra flutuando no mar
+    if (Math.hypot(x - PORT.x, z - PORT.z) < 24) continue;
     const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), rockMat);
     rock.position.set(x, terrainHeight(x, z) + s * 0.3, z);
     rock.rotation.set(rnd(i, 5) * 3, rnd(i, 6) * 3, 0);
@@ -433,6 +459,162 @@ function buildVillage() {
   }
 }
 
+// ------------------------------------------------ Porto Bruma (segunda cidade, na costa)
+function buildPort() {
+  // casinhas de pescador
+  const spots = [
+    [214, 30, 0.8], [228, 26, -0.4], [212, 50, 2.2],
+  ];
+  for (let i = 0; i < spots.length; i++) {
+    const [x, z, rot] = spots[i];
+    const w = 4 + rnd(i, 300) * 1.2, d = 3.6 + rnd(i, 301) * 1.2;
+    const c = makeCottage(w, d, 2.8 + rnd(i, 302) * 0.8, rot);
+    c.position.set(x, terrainHeight(x, z), z);
+    scene.add(c);
+    colliders.push({ x, z, r: Math.max(w, d) * 0.72 });
+  }
+  MAP_FEATURES.push({ x: PORT.x, z: PORT.z, color: '#8a6d4a', r: 6 });
+
+  // píer de madeira avançando sobre o mar
+  const plankMat = lambert(0x6b4a2a);
+  const postMat = lambert(0x4a3520);
+  for (let i = 0; i < 7; i++) {
+    const px = 238 + i * 2.6;
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.18, 3.2), plankMat);
+    deck.position.set(px, SEA.waterY + 0.9, 40);
+    deck.castShadow = true;
+    scene.add(deck);
+    for (const sz of [-1.3, 1.3]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 3.4, 6), postMat);
+      post.position.set(px + 1.1, SEA.waterY - 0.6, 40 + sz);
+      scene.add(post);
+    }
+  }
+  // barcos de pesca atracados
+  for (let i = 0; i < 2; i++) {
+    const boat = new THREE.Group();
+    const hull = new THREE.Mesh(new THREE.SphereGeometry(1.4, 10, 8), lambert(i ? 0x7a4a30 : 0x5a6a7a));
+    hull.scale.set(1.5, 0.55, 0.8);
+    hull.position.y = 0.1;
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.09, 6, 16), lambert(0x4a3520));
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = 0.55;
+    rim.scale.set(1.4, 0.75, 1);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 3, 6), postMat);
+    mast.position.y = 1.8;
+    boat.add(hull, rim, mast);
+    boat.position.set(250 + i * 6, SEA.waterY + 0.15, 33 + i * 12);
+    boat.rotation.y = rnd(i, 310) * 2;
+    scene.add(boat);
+    boats.push(boat);
+  }
+  // farol na ponta rochosa
+  {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.8, 2, 10), lambert(0x8a8478));
+    base.position.y = 1;
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.6, 10, 10), lambert(0xe8e0d0));
+    tower.position.y = 7;
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(1.32, 1.45, 1.6, 10), lambert(0xa03028));
+    band.position.y = 6;
+    const lampRoom = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 1.4, 8),
+      new THREE.MeshLambertMaterial({ color: 0x3a3020, emissive: 0xffd24a, emissiveIntensity: 0.4 }));
+    lampRoom.position.y = 12.7;
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(1.2, 1, 8), lambert(0x8a1c1c));
+    roof.position.y = 13.9;
+    g.add(base, tower, band, lampRoom, roof);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const y = terrainHeight(240, 62);
+    g.position.set(240, y, 62);
+    scene.add(g);
+    colliders.push({ x: 240, z: 62, r: 2.6 });
+    // facho giratório
+    lightBeam = new THREE.SpotLight(0xfff2c0, 0, 260, 0.22, 0.5);
+    lightBeam.position.set(240, y + 12.7, 62);
+    lightBeamTarget = new THREE.Object3D();
+    scene.add(lightBeam, lightBeamTarget);
+    lightBeam.target = lightBeamTarget;
+  }
+  // banca da mercadora + postes
+  {
+    const g = new THREE.Group();
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.0, 1.0), lambert(0x6b4a2a));
+    counter.position.y = 0.5;
+    const awning = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.08, 1.6), lambert(0x2e5a8e));
+    awning.position.y = 2.3;
+    awning.rotation.x = 0.12;
+    for (const [px, pz] of [[-1.1, -0.4], [1.1, -0.4], [-1.1, 0.4], [1.1, 0.4]]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.3, 0.1), lambert(0x4a3520));
+      post.position.set(px, 1.15, pz);
+      g.add(post);
+    }
+    g.add(counter, awning);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.position.set(221, terrainHeight(221, 46), 46);
+    g.rotation.y = 0.6;
+    scene.add(g);
+    colliders.push({ x: 221, z: 46, r: 1.8 });
+  }
+  addLamp(218, 36); addLamp(230, 44);
+  addCampfire(224, 34);
+  // caixotes e redes na praia dos caranguejos
+  for (let i = 0; i < 3; i++) {
+    const x = CRAB_BEACH.x - 6 + i * 5, z = CRAB_BEACH.z - 4 + (i % 2) * 6;
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), lambert(0x7a5c34));
+    crate.position.set(x, terrainHeight(x, z) + 0.45, z);
+    crate.rotation.y = rnd(i, 320) * 1.5;
+    crate.castShadow = true;
+    scene.add(crate);
+    colliders.push({ x, z, r: 0.75 });
+  }
+}
+
+// ------------------------------------------------ Portais Cullis (viagem rápida)
+function buildGates() {
+  for (const gpos of GATES) {
+    const y = terrainHeight(gpos.x, gpos.z);
+    const g = new THREE.Group();
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.7, 0.34, 8, 22), lambert(0x8a8478));
+    ring.position.y = 2.0;
+    const glow = new THREE.Mesh(new THREE.CircleGeometry(1.35, 24),
+      new THREE.MeshBasicMaterial({ color: 0x7fe8ff, transparent: true, opacity: 0.55, side: THREE.DoubleSide }));
+    glow.position.y = 2.0;
+    const light = new THREE.PointLight(0x7fe8ff, 1.2, 10);
+    light.position.y = 2.2;
+    for (const sx of [-1, 1]) {
+      const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.55, 0), lambert(0x77706a));
+      stone.position.set(sx * 1.9, 0.35, 0.3);
+      g.add(stone);
+    }
+    g.add(ring, glow, light);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.position.set(gpos.x, y, gpos.z);
+    g.rotation.y = rnd(gpos.x, gpos.z) * Math.PI;
+    scene.add(g);
+    gateGlows.push(glow);
+    colliders.push({ x: gpos.x, z: gpos.z, r: 1.0 });
+    MAP_FEATURES.push({ x: gpos.x, z: gpos.z, color: '#7fe8ff', r: 2 });
+  }
+}
+
+// ------------------------------------------------ chuva
+function buildRain() {
+  const N = 1400;
+  const pts = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    pts[i * 3] = (Math.random() - 0.5) * 70;
+    pts[i * 3 + 1] = Math.random() * 26;
+    pts[i * 3 + 2] = (Math.random() - 0.5) * 70;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  rain = new THREE.Points(geo, new THREE.PointsMaterial({
+    color: 0x9ab8d8, size: 0.14, transparent: true, opacity: 0, depthWrite: false,
+  }));
+  rain.visible = false;
+  scene.add(rain);
+}
+
 // ------------------------------------------------ bandit camp
 function buildBanditCamp() {
   const { x: cx, z: cz } = BANDIT_CAMP;
@@ -653,5 +835,45 @@ export function updateWorld(time, dt, playerPos) {
     b.rotation.y = -t - Math.PI / 2;
     const flap = Math.sin(time * 5 + u.i * 2) * 0.7;
     u.wl.rotation.z = flap; u.wr.rotation.z = -flap;
+  }
+
+  // ---- clima: mesmo para todos os clientes (derivado da hora do mundo) ----
+  const slot = Math.floor(SKY.dayT * 6);
+  weather.raining = hash(SKY.day * 7.31 + slot * 3.7, slot * 9.13) < 0.32;
+  const target = weather.raining ? 1 : 0;
+  weather.rainF += (target - weather.rainF) * Math.min(1, dt * 0.25);
+  rain.visible = weather.rainF > 0.03;
+  rain.material.opacity = weather.rainF * 0.55;
+  if (rain.visible) {
+    rain.position.set(playerPos.x, playerPos.y, playerPos.z);
+    const rp = rain.geometry.attributes.position;
+    for (let i = 0; i < rp.count; i++) {
+      let ry = rp.getY(i) - dt * 32;
+      if (ry < 0) {
+        ry += 26;
+        rp.setX(i, (Math.random() - 0.5) * 70);
+        rp.setZ(i, (Math.random() - 0.5) * 70);
+      }
+      rp.setY(i, ry);
+    }
+    rp.needsUpdate = true;
+  }
+
+  // barcos balançando no cais
+  for (let i = 0; i < boats.length; i++) {
+    boats[i].position.y = SEA.waterY + 0.15 + Math.sin(time * 0.9 + i * 2) * 0.12;
+    boats[i].rotation.z = Math.sin(time * 0.7 + i) * 0.05;
+  }
+  // portais Cullis pulsando
+  for (const gl of gateGlows) {
+    gl.rotation.z = time * 0.8;
+    gl.material.opacity = 0.45 + Math.sin(time * 2.2) * 0.15;
+  }
+  // facho do farol varrendo o mar à noite
+  if (lightBeam) {
+    lightBeam.intensity = nf * 5;
+    const a = time * 0.5;
+    lightBeamTarget.position.set(240 + Math.cos(a) * 80, 0, 62 + Math.sin(a) * 80);
+    lightBeamTarget.updateMatrixWorld();
   }
 }
