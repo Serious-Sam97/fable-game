@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import {
   canvas, scene, camera, composer, SKY, updateSky, skyHour,
-  beep, noiseBurst, startMusic, toggleMusic, setCombatMusic, clamp, lerp, rnd,
+  beep, noiseBurst, startMusic, toggleMusic, setCombatMusic, startAmbient, setAmbient, footstep, clamp, lerp, rnd,
 } from './core';
 import {
-  WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
+  WORLD_R, WATERS, SEA, terrainHeight, buildWorld, updateWorld, weather,
   chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
   gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue,
 } from './world';
@@ -2091,6 +2091,7 @@ function startGame(fromSave) {
   if (fromSave) loadGame();
   started = true;
   startMusic();
+  startAmbient();
   connectNet(
     () => {
       const cs = combatStats();
@@ -2601,6 +2602,14 @@ function tick() {
       player.walkT *= 0.8;
     }
     player.moving = ml > 0 || player.rollT > 0;
+    // passos por superfície (o pé no chão dita o som)
+    if (ml > 0 && player.onGround) {
+      let surface = 'grass';
+      const nearSeaD = Math.hypot(player.pos.x - SEA.x, player.pos.z - SEA.z);
+      if (nearSeaD < SEA.r + SEA.shore) surface = 'sand';
+      else if (Math.hypot(player.pos.x - 240, player.pos.z - 40) < 12) surface = 'wood'; // píer
+      footstep(surface, true);
+    }
     const groundY = terrainHeight(player.pos.x, player.pos.z);
     if (keys.Space && player.onGround) { player.vy = 8.5; player.onGround = false; }
     if (!player.onGround) {
@@ -2648,6 +2657,12 @@ function tick() {
   if (net.connected && net.serverDayT !== null) SKY.dayT = net.serverDayT; // hora do mundo é do servidor
   updateSky(started ? dt : dt * 0.3, player.pos, weather.rainF);
   updateWorld(time, dt, player.pos);
+  // ambiente sonoro: pássaros/grilos pela hora, ondas perto do mar
+  {
+    const seaD = Math.hypot(player.pos.x - SEA.x, player.pos.z - SEA.z);
+    const nearSea = clamp(1 - (seaD - (SEA.r - 20)) / 90, 0, 1);
+    setAmbient(SKY.nightF, nearSea);
+  }
   if (started) {
     if (!net.connected) {
       localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead, wanted: isWanted() }], SKY.nightF);

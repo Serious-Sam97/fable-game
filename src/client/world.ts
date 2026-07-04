@@ -118,12 +118,65 @@ function buildGround() {
 }
 
 // ------------------------------------------------ water
+// ---- água: shader com fresnel, ondulação e brilho do sol ----
+const waterUniforms = {
+  uTime: { value: 0 },
+  uSunDir: { value: new THREE.Vector3(0.3, 0.8, 0.2) },
+  uSunColor: { value: new THREE.Color(0xfff0d0) },
+  uNightF: { value: 0 },
+};
+const waterMats = [];
+function makeWaterMaterial(deep, shallow) {
+  const m = new THREE.ShaderMaterial({
+    transparent: true,
+    uniforms: {
+      ...waterUniforms,
+      uDeep: { value: new THREE.Color(deep) },
+      uShallow: { value: new THREE.Color(shallow) },
+    },
+    vertexShader: `
+      varying vec3 vWorld; varying vec3 vNormalW;
+      uniform float uTime;
+      void main(){
+        vec3 p = position;
+        // ondas suaves cruzadas deslocam a altura
+        p.y += sin(p.x*0.25 + uTime*1.3) * 0.12 + cos(p.z*0.3 - uTime*1.1) * 0.1;
+        vec4 wp = modelMatrix * vec4(p,1.0);
+        vWorld = wp.xyz;
+        // normal aproximada das ondas
+        float nx = cos(p.x*0.25 + uTime*1.3) * 0.25;
+        float nz = -sin(p.z*0.3 - uTime*1.1) * 0.25;
+        vNormalW = normalize(vec3(nx, 1.0, nz));
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      varying vec3 vWorld; varying vec3 vNormalW;
+      uniform vec3 uDeep; uniform vec3 uShallow; uniform vec3 uSunDir; uniform vec3 uSunColor;
+      uniform float uTime; uniform float uNightF;
+      void main(){
+        vec3 V = normalize(cameraPosition - vWorld);
+        vec3 N = normalize(vNormalW);
+        float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);      // reflexo raso nas bordas
+        // cintilância animada
+        float shimmer = sin(vWorld.x*0.8 + uTime*2.0) * cos(vWorld.z*0.7 - uTime*1.7);
+        vec3 col = mix(uDeep, uShallow, clamp(fres + shimmer*0.06, 0.0, 1.0));
+        // brilho especular do sol
+        vec3 H = normalize(uSunDir + V);
+        float spec = pow(max(dot(N, H), 0.0), 60.0);
+        col += uSunColor * spec * (1.0 - uNightF) * 0.9;
+        col = mix(col, col*0.35, uNightF);                     // escurece à noite
+        float alpha = mix(0.78, 0.95, fres);
+        gl_FragColor = vec4(col, alpha);
+      }`,
+  });
+  waterMats.push(m);
+  return m;
+}
+
 function buildWater() {
-  waterGeo = new THREE.CircleGeometry(LAKE.r + 6, 40, 0, Math.PI * 2);
+  waterGeo = new THREE.PlaneGeometry((LAKE.r + 6) * 2, (LAKE.r + 6) * 2, 24, 24);
   waterGeo.rotateX(-Math.PI / 2);
-  water = new THREE.Mesh(waterGeo, new THREE.MeshPhongMaterial({
-    color: 0x3a7a9c, transparent: true, opacity: 0.82, shininess: 120, specular: 0x88bbdd,
-  }));
+  water = new THREE.Mesh(waterGeo, makeWaterMaterial(0x1a4a6a, 0x6ab0d0));
   water.position.set(LAKE.x, LAKE.waterY, LAKE.z);
   scene.add(water);
   // reeds
@@ -140,11 +193,9 @@ function buildWater() {
   }
   MAP_FEATURES.push({ x: LAKE.x, z: LAKE.z, color: '#3a7a9c', r: 9 });
   // oceano da costa leste — plano grande e calmo (as ondas ficam por conta do specular)
-  const seaGeo = new THREE.CircleGeometry(SEA.r + 60, 48);
+  const seaGeo = new THREE.PlaneGeometry((SEA.r + 60) * 2, (SEA.r + 60) * 2, 48, 48);
   seaGeo.rotateX(-Math.PI / 2);
-  seaWater = new THREE.Mesh(seaGeo, new THREE.MeshPhongMaterial({
-    color: 0x2e6a8e, transparent: true, opacity: 0.86, shininess: 140, specular: 0x9accee,
-  }));
+  seaWater = new THREE.Mesh(seaGeo, makeWaterMaterial(0x123a5a, 0x4a9ac0));
   seaWater.position.set(SEA.x, SEA.waterY, SEA.z);
   scene.add(seaWater);
   MAP_FEATURES.push({ x: 288, z: 0, color: '#2e6a8e', r: 26 });
@@ -1198,15 +1249,11 @@ export function updateWorld(time, dt, playerPos) {
     c.position.x += dt * 1.2;
     if (c.position.x > playerPos.x + 280) c.position.x = playerPos.x - 280;
   }
-  // water waves
-  {
-    const pos = waterGeo.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), z = pos.getZ(i);
-      pos.setY(i, Math.sin(time * 1.4 + x * 0.4 + z * 0.3) * 0.1);
-    }
-    pos.needsUpdate = true;
-  }
+  // água (shader): tempo, direção do sol e fator de noite
+  waterUniforms.uTime.value = time;
+  waterUniforms.uSunDir.value.set(az, Math.max(0.05, sunAlt), 0.3).normalize();
+  waterUniforms.uSunColor.value.setHex(sunAlt > 0.2 ? 0xfff0d0 : 0xff9a5a);
+  waterUniforms.uNightF.value = nf;
   // fireflies at night
   {
     fireflies.material.opacity = nf;

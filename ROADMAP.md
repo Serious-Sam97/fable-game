@@ -195,13 +195,17 @@ finais visivelmente diferentes.
 - [ ] **Animation state machine** com blending (idle↔walk↔run, upper/lower body separados)
 - [x] **Vento na grama e árvores** ✅ (vertex shader via onBeforeCompile: grama inclina
       pela altura do vértice + rajadas; árvores balançam da base) + grama muito mais densa
-      (2600 tufos, variação de cor); água com reflexo/fresnel e god rays pendentes
+      (2600 tufos, variação de cor)
+- [x] **Água com shader** ✅ (fresnel: azul profundo no centro → claro nas bordas, ondas no
+      vertex, cintilância e brilho especular do sol, escurece à noite) no lago e no oceano;
+      god rays pendentes
 - [x] **Céu com gradiente** ✅ (domo com shader zênite→horizonte + brilho do sol,
       transiciona dia/crepúsculo/noite — pôr do sol alaranjado dramático); SSAO/color
       grading pendentes (bloom + tone mapping ACES já existem)
-- [~] **Música adaptativa** ✅ (camada de combate: acordes tensos + tambor pulsante quando
-      um inimigo caça você por perto, volta ao alaúde tranquilo ao sair); samples ambientes
-      e passos por superfície pendentes
+- [x] **Música adaptativa** ✅ (camada de combate: acordes tensos + tambor pulsante quando
+      um inimigo caça você por perto, volta ao alaúde tranquilo ao sair)
+- [x] **Áudio ambiente + passos** ✅ (pássaros de dia, grilos à noite, ondas na costa —
+      tudo procedural WebAudio; passos variam por superfície: grama abafada / areia / madeira do píer)
 - [ ] **UI overhaul estilo pergaminho/Fable**: mapa-múndi desenhado à mão, journal de
       missões ilustrado, tooltips ricos
 - [ ] **Suporte a gamepad** + remapeamento de teclas

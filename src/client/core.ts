@@ -223,3 +223,105 @@ export function toggleMusic() {
   music.on = !music.on;
   return music.on;
 }
+
+// -------- paisagem sonora ambiente (pássaros, grilos, ondas, vento) --------
+export const ambient = { night: 0, nearSea: 0 };
+export function setAmbient(nightF, nearSea) { ambient.night = nightF; ambient.nearSea = nearSea; }
+
+function birdChirp() {
+  const ac = ensureAudio(); if (!ac) return;
+  try {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine';
+    const f = 2200 + Math.random() * 1400;
+    o.frequency.setValueAtTime(f, ac.currentTime);
+    o.frequency.linearRampToValueAtTime(f + 500, ac.currentTime + 0.06);
+    o.frequency.linearRampToValueAtTime(f - 300, ac.currentTime + 0.12);
+    g.gain.setValueAtTime(0.018, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.14);
+    o.connect(g).connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + 0.15);
+    // trinado curto (2-3 notas)
+    if (Math.random() < 0.6) setTimeout(birdChirp2, 90 + Math.random() * 80);
+  } catch (e) { /* ignore */ }
+}
+function birdChirp2() {
+  const ac = ensureAudio(); if (!ac) return;
+  try {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine'; o.frequency.value = 2600 + Math.random() * 1200;
+    g.gain.setValueAtTime(0.014, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.1);
+    o.connect(g).connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + 0.1);
+  } catch (e) { /* ignore */ }
+}
+function cricket() {
+  const ac = ensureAudio(); if (!ac) return;
+  try {
+    for (let k = 0; k < 3; k++) {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'square'; o.frequency.value = 4600;
+      const t0 = ac.currentTime + k * 0.05;
+      g.gain.setValueAtTime(0.006, t0);
+      g.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.03);
+      o.connect(g).connect(ac.destination);
+      o.start(t0); o.stop(t0 + 0.03);
+    }
+  } catch (e) { /* ignore */ }
+}
+function seaWave() {
+  const ac = ensureAudio(); if (!ac) return;
+  try {
+    const len = Math.floor(ac.sampleRate * 1.8);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      const env = Math.sin((i / len) * Math.PI); // sobe e desce como uma onda
+      d[i] = (Math.random() * 2 - 1) * env * env;
+    }
+    const src = ac.createBufferSource(); src.buffer = buf;
+    const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
+    const g = ac.createGain(); g.gain.value = 0.05 * ambient.nearSea;
+    src.connect(f).connect(g).connect(ac.destination);
+    src.start();
+  } catch (e) { /* ignore */ }
+}
+let ambientStarted = false;
+function ambientTick() {
+  if (music.on && document.visibilityState === 'visible') {
+    const day = 1 - ambient.night;
+    if (Math.random() < day * 0.7) birdChirp();       // pássaros de dia
+    if (Math.random() < ambient.night * 0.8) cricket(); // grilos à noite
+    if (ambient.nearSea > 0.3 && Math.random() < 0.6) seaWave(); // ondas na costa
+  }
+  setTimeout(ambientTick, 700 + Math.random() * 900);
+}
+export function startAmbient() {
+  if (ambientStarted) return;
+  ambientStarted = true;
+  ambientTick();
+}
+
+// passos — variam pela superfície (grama abafada, areia áspera, madeira do píer)
+let lastStep = 0;
+export function footstep(surface, moving) {
+  if (!moving) return;
+  const now = performance.now ? Date.now() : 0;
+  const ac = ensureAudio(); if (!ac) return;
+  if (ac.currentTime - lastStep < 0.32) return;
+  lastStep = ac.currentTime;
+  try {
+    const len = Math.floor(ac.sampleRate * 0.09);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = ac.createBufferSource(); src.buffer = buf;
+    const f = ac.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = surface === 'wood' ? 1400 : surface === 'sand' ? 900 : 550; // grama mais abafada
+    const g = ac.createGain(); g.gain.value = surface === 'wood' ? 0.05 : 0.03;
+    src.connect(f).connect(g).connect(ac.destination);
+    src.start();
+  } catch (e) { /* ignore */ }
+}
