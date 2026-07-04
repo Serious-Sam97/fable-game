@@ -6,11 +6,12 @@ import {
 import {
   WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
   chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
-  gatherables, FORGE, CAULDRON,
+  gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
   makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, applyArmorTo, makeTroll, makeCrab,
+  makeShadowKnight, makeMalachi,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
@@ -234,6 +235,8 @@ const quests = {
   q2: { state: 'locked', count: 0, goal: 5, leaderResolved: false },   // bandits — Whisper
   q3: { state: 'locked', count: 0, goal: 1 },                          // balverine — Guildmaster
   q4: { state: 'available', count: 0, goal: 8 },                       // crabs — Pescador Jonas
+  // arco principal: A Sombra sobre Albion (Lorde Malachi)
+  mq: { stage: 'locked', ending: null },
 };
 
 // ============================================================ NPCs
@@ -308,6 +311,8 @@ const MAKERS = {
   lobo_alfa: () => makeBeast({ color: 0x2e3340, scale: 1.55, tail: true }),
   troll: () => makeTroll(),
   caranguejo: () => makeCrab(),
+  cavaleiro_sombrio: () => makeShadowKnight(),
+  malachi: () => makeMalachi(),
 };
 
 // simulação local — autoritativa apenas OFFLINE; online o servidor é a verdade
@@ -524,6 +529,17 @@ function requestSpawnBalverine() {
   beep(70, 0.9, 'sawtooth', 0.09, -25);
   centerMsg('Um uivo ecoa pelas colinas…', 'O Balverine desperta na Floresta Sombria');
 }
+function requestSpawnShadowKnight() {
+  if (net.connected) sendMsg({ t: 'spawnShadowKnight' });
+  else localSim.spawnShadowKnight();
+}
+function requestSpawnMalachi() {
+  if (net.connected) sendMsg({ t: 'spawnMalachi' });
+  else localSim.spawnMalachi();
+  noiseBurst(0.8, 0.12);
+  beep(55, 1.1, 'sawtooth', 0.1, -20);
+  centerMsg('O ar racha com energia sombria…', 'Lorde Malachi ergue-se das Pedras do Ritual');
+}
 
 // selection ring
 const selRing = new THREE.Mesh(
@@ -706,6 +722,19 @@ function questCredit(e) {
     quests.q4.count++;
     floatText(e.pos, `Caranguejos: ${quests.q4.count}/${quests.q4.goal}`, '#8fd0ff', 13);
     if (quests.q4.count >= quests.q4.goal) { quests.q4.state = 'done'; centerMsg('Maré Vermelha', 'Retorne ao Pescador Jonas'); }
+    updateQuestUI(); saveGame();
+  }
+  // arco principal
+  if (e.type === 'cavaleiro_sombrio' && quests.mq.stage === 'lieutenant') {
+    quests.mq.stage = 'toRitual';
+    floatText(e.pos, '🗝️ Uma pista sobre Malachi…', '#c8a0ff', 15);
+    centerMsg('O Cavaleiro Sombrio tomba', 'Ele sussurra: "as Pedras… do Ritual…" — retorne à Guilda');
+    updateQuestUI(); saveGame();
+  }
+  if (e.type === 'malachi' && quests.mq.stage === 'confront') {
+    quests.mq.stage = 'choice';
+    // Malachi cai de joelhos em vez de morrer — a escolha é sua
+    centerMsg('Malachi está de joelhos', 'A máscara racha… aproxime-se e decida o destino dele');
     updateQuestUI(); saveGame();
   }
 }
@@ -957,13 +986,23 @@ function updateQuestUI() {
   if (quests.q3.state === 'done') lines.push(`<b>A Fera da Floresta</b><br><span class="done">Retorne ao Mestre da Guilda</span>`);
   if (quests.q4.state === 'active') lines.push(`<b>Maré Vermelha</b><br>Caranguejos: <span class="${quests.q4.count >= quests.q4.goal ? 'done' : ''}">${quests.q4.count}/${quests.q4.goal}</span>`);
   if (quests.q4.state === 'done') lines.push(`<b>Maré Vermelha</b><br><span class="done">Retorne ao Pescador Jonas</span>`);
+  // arco principal
+  const ms = quests.mq.stage;
+  const MQ = (t) => `<b style="color:#c8a0ff">⚔ A Sombra sobre Albion</b><br>${t}`;
+  if (ms === 'lieutenant') lines.push(MQ('Derrote o <span>Cavaleiro Sombrio</span> na Floresta Sombria'));
+  if (ms === 'toRitual') lines.push(MQ('<span class="done">Retorne ao Mestre da Guilda</span>'));
+  if (ms === 'confront') lines.push(MQ('Enfrente <span>Lorde Malachi</span> nas Pedras do Ritual (leste da floresta)'));
+  if (ms === 'choice') lines.push(MQ('Decida o destino de <span>Malachi</span> nas Pedras do Ritual'));
   $('questTracker').style.display = lines.length ? 'block' : 'none';
   $('questText').innerHTML = lines.join('<hr style="border-color:rgba(138,109,47,.3);margin:6px 0">');
 
   // quest markers
-  guildmaster.marker.visible = quests.q1.state === 'available' || quests.q1.state === 'done' ||
-    (quests.q2.state === 'completed' && (quests.q3.state === 'available' || quests.q3.state === 'locked')) || quests.q3.state === 'done';
-  guildmaster.marker.material = makeTextSprite(quests.q1.state === 'done' || quests.q3.state === 'done' ? '?' : '!').material;
+  const gmReturn = quests.q1.state === 'done' || quests.q3.state === 'done' || ms === 'toRitual';
+  const gmOffer = quests.q1.state === 'available' ||
+    (quests.q2.state === 'completed' && (quests.q3.state === 'available' || quests.q3.state === 'locked')) ||
+    ms === 'available' || ms === 'confront';
+  guildmaster.marker.visible = gmReturn || gmOffer;
+  guildmaster.marker.material = makeTextSprite(gmReturn ? '?' : '!').material;
   whisper.marker.visible = (quests.q1.state === 'completed' && quests.q2.state !== 'completed' && quests.q2.state !== 'active') || quests.q2.state === 'done';
   whisper.marker.material = makeTextSprite(quests.q2.state === 'done' ? '?' : '!').material;
   jonas.marker.visible = quests.q4.state === 'available' || quests.q4.state === 'done';
@@ -991,6 +1030,49 @@ const closeBtn = { label: 'Fechar' };
 
 function talkTo(npc) {
   if (npc.role === 'guildmaster') {
+    // desbloqueia o arco principal depois de vencer o Balverine
+    if (quests.q3.state === 'completed' && quests.mq.stage === 'locked') quests.mq.stage = 'available';
+    const mq = quests.mq;
+    if (mq.stage !== 'locked') {
+      if (mq.stage === 'available') {
+        showDialog('A Sombra sobre Albion',
+          'Herói… há algo que a Guilda temeu por gerações. Lorde Malachi foi o maior de nós — até fazer um pacto com as sombras. Agora ele retornou, e seu Cavaleiro Sombrio já ronda a Floresta Sombria. Detenha o cavaleiro; ele nos levará a Malachi.',
+          'Ato I — Recompensa: 400 XP, +12 renome',
+          [{ label: 'Aceitar o chamado', cls: 'good', cb: () => { mq.stage = 'lieutenant'; requestSpawnShadowKnight(); updateQuestUI(); centerMsg('A Sombra sobre Albion', 'Cace o Cavaleiro Sombrio na Floresta Sombria'); saveGame(); } }, closeBtn]);
+        return;
+      }
+      if (mq.stage === 'lieutenant') {
+        showDialog('Mestre da Guilda', 'O Cavaleiro Sombrio aguarda na Floresta Sombria, ao sul. Derrote-o e descubra onde Malachi se esconde.', '', [closeBtn]);
+        return;
+      }
+      if (mq.stage === 'toRitual') {
+        showDialog('A Sombra sobre Albion',
+          'As Pedras do Ritual… então é lá que ele renasce. A leste da floresta, onde os antigos menires sangram luz roxa. Vá, herói — mas saiba que Malachi já foi como você. Talvez ainda haja algo a salvar… ou não.',
+          'Ato II concluído — o clímax o aguarda',
+          [{ label: 'Completar Ato II (+400 XP, +12 renome)', cls: 'good', cb: () => {
+            mq.stage = 'confront';
+            gainXP(400); gainRenown(12);
+            centerMsg('Rumo às Pedras do Ritual', 'Enfrente Lorde Malachi a leste da Floresta Sombria');
+            updateQuestUI(); saveGame();
+          } }]);
+        return;
+      }
+      if (mq.stage === 'confront') {
+        showDialog('Mestre da Guilda', 'Lorde Malachi o espera nas Pedras do Ritual, a leste da Floresta Sombria. Que os Antigos guiem sua lâmina.', '', [closeBtn]);
+        return;
+      }
+      if (mq.stage === 'choice') {
+        showDialog('Mestre da Guilda', 'Malachi caiu por sua mão nas Pedras do Ritual — mas o destino dele ainda está em aberto. Retorne lá e decida.', '', [closeBtn]);
+        return;
+      }
+      if (mq.stage === 'completed') {
+        const ep = mq.ending === 'redeemed' ? 'Você redimiu Malachi — e Albion floresce sob a luz do seu exemplo.'
+          : mq.ending === 'executed' ? 'Você destruiu Malachi. Albion está segura… e teme o poder que você agora carrega.'
+          : 'A Sombra foi vencida.';
+        showDialog('Lenda de Albion', ep, '', [closeBtn]);
+        return;
+      }
+    }
     if (quests.q1.state === 'available') {
       showDialog('Besouros no Pomar',
         'Bem-vindo, jovem herói! Besouros gigantes infestaram o pomar a leste. Uma primeira missão digna da Guilda: elimine 8 deles.',
@@ -1475,6 +1557,40 @@ function openHouseDialog() {
   }
 }
 
+// ============================================================ clímax: Malachi
+function malachiAlive() {
+  return enemies.some((e) => e.type === 'malachi' && e.state !== 'dead');
+}
+function confrontMalachi() {
+  if (malachiAlive()) return;
+  requestSpawnMalachi();
+}
+function decideMalachi() {
+  showDialog('O Destino de Lorde Malachi',
+    '"Então… o pupilo supera o mestre. Faça o que veio fazer, herói. Mas saiba: eu também já quis salvar Albion, um dia."',
+    'A sua escolha definirá a sua lenda.',
+    [
+      { label: '😇 Redimir — trazê-lo de volta à luz', cls: 'good', cb: () => {
+        quests.mq.stage = 'completed'; quests.mq.ending = 'redeemed';
+        changeMorality(30); gainRenown(30); gainXP(1000); player.gold += 400;
+        addItem({ wpn: 'espada_longa', rar: 'lendario' });
+        spawnHeroStatue(false);
+        centerMsg('Malachi é redimido', 'A Sombra se dissipa — Albion viverá em paz. Você é uma Lenda.');
+        toast('🏆 Espada Longa Lendária + estátua erguida na sua honra!');
+        updateQuestUI(); saveGame();
+      } },
+      { label: '😈 Executar — reclamar o poder das sombras', cls: 'evil', cb: () => {
+        quests.mq.stage = 'completed'; quests.mq.ending = 'executed';
+        changeMorality(-30); gainRenown(30); gainXP(1000); player.gold += 600;
+        addItem({ wpn: 'martelo', rar: 'lendario' });
+        spawnHeroStatue(true);
+        centerMsg('Malachi é destruído', 'O poder sombrio é seu. Albion te obedecerá… por medo.');
+        toast('🏆 Martelo de Guerra Lendário — forjado no poder de Malachi!');
+        updateQuestUI(); saveGame();
+      } },
+    ]);
+}
+
 // ============================================================ coleta & crafting
 function gatherNode(node) {
   if (node.cooldown > 0) return;
@@ -1614,6 +1730,13 @@ function nearestInteract() {
   consider(dHouse, 3.2, player.ownedHouse ? (houseRentDue() > 0 ? 'Entrar em casa 🏠 (aluguel!)' : 'Entrar em casa 🏠') : 'Ver casa à venda 🏠', openHouseDialog);
   if (!fishing.active && nearWater()) {
     consider(2.0, 3, 'Pescar 🎣', startFishing); // prioridade alta perto d'água
+  }
+  // clímax do arco principal — Pedras do Ritual
+  const dRitual = Math.hypot(RITUAL.x - player.pos.x, RITUAL.z - player.pos.z);
+  if (quests.mq.stage === 'confront' && !malachiAlive()) {
+    consider(dRitual, 6, 'Enfrentar Lorde Malachi ⚔️', confrontMalachi);
+  } else if (quests.mq.stage === 'choice') {
+    consider(dRitual, 8, 'Decidir o destino de Malachi', decideMalachi);
   }
   // estações de crafting
   consider(Math.hypot(FORGE.x - player.pos.x, FORGE.z - player.pos.z), 3, 'Usar a Forja ⚒️', openForge);
@@ -1795,6 +1918,7 @@ function buildSaveData() {
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
     q4: { state: quests.q4.state, count: quests.q4.count },
+    mq: { stage: quests.mq.stage, ending: quests.mq.ending },
     disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
     talents: player.talents,
     fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
@@ -1844,8 +1968,11 @@ function applySaveData(data) {
   Object.assign(quests.q2, data.q2);
   Object.assign(quests.q3, data.q3);
   if (data.q4) Object.assign(quests.q4, data.q4);
+  if (data.mq) Object.assign(quests.mq, data.mq);
   if (!net.connected && (quests.q2.state === 'completed' || quests.q2.choice)) localSim.removeLeader();
   if (quests.q3.state === 'active') requestSpawnBalverine();
+  if (quests.mq.stage === 'lieutenant') requestSpawnShadowKnight();
+  if (quests.mq.stage === 'completed') spawnHeroStatue(quests.mq.ending === 'executed');
   updateMoralityVisuals();
   updateHeroBody();
   updateQuestUI();

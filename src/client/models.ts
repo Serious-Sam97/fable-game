@@ -478,6 +478,93 @@ export function makeHobbe({ shaman = false, captain = false } = {}) {
   return { group: g, armL, armR, legL, legR, mats, legs: [legL, legR] };
 }
 
+// ---------------------------------------------------------------- cavaleiro sombrio
+export function makeShadowKnight() {
+  const h = makeHumanoid({
+    skin: 0x6a6472, hair: 0x14121a,
+    shirt: 0x1e1c26, sleeves: 0x14121a,
+    pants: 0x14121a, boots: 0x0e0c12, bulk: 1.15,
+  });
+  const { group: g, mats, M } = h;
+  // elmo fechado com fenda de visão vermelha
+  const helm = new THREE.Mesh(new THREE.SphereGeometry(0.26, 14, 12), M(0x24222c));
+  helm.geometry.scale(1, 1.05, 1);
+  helm.position.y = 0.04;
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.05, 0.1), basic(0xff2a2a));
+  visor.position.set(0, 0, 0.22);
+  h.head.add(helm, visor);
+  // ombreiras de espinho
+  for (const sx of [-1, 1]) {
+    const pauldron = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), M(0x1a1820));
+    pauldron.position.set(sx * 0.5, 1.72, 0);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.24, 5), M(0x3a3844));
+    spike.position.set(sx * 0.55, 1.9, 0);
+    g.add(pauldron, spike);
+  }
+  // espada negra
+  const bladeG = new THREE.Group();
+  bladeG.position.set(0, -0.86, 0.05);
+  bladeG.rotation.x = -Math.PI / 2 - 0.3;
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.15, 0.04), M(0x2a2830));
+  blade.position.y = -0.6;
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(0.03, 1.15, 0.05), basic(0x8a2aff));
+  edge.position.y = -0.6;
+  bladeG.add(blade, edge);
+  h.armR.add(bladeG);
+  shadows(g);
+  return { group: g, armL: h.armL, armR: h.armR, legL: h.legL, legR: h.legR, mats, legs: [h.legL, h.legR] };
+}
+
+// ---------------------------------------------------------------- Lorde Malachi (vilão)
+export function makeMalachi() {
+  const h = makeHumanoid({
+    skin: 0x8a8290, hair: 0x0e0c14,
+    shirt: 0x241826, sleeves: 0x1a1420,
+    pants: 0x14101a, boots: 0x0c0a10, bulk: 1.25,
+  });
+  const { group: g, mats, M } = h;
+  // máscara dourada rachada (Jack of Blades)
+  const mask = new THREE.Mesh(new THREE.SphereGeometry(0.25, 16, 14, 0, Math.PI * 2, 0, Math.PI * 0.62), M(0xd8b84a));
+  mask.geometry.scale(1.02, 1.15, 1.02);
+  mask.position.set(0, 0.02, 0.02);
+  const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.03, 0.06), basic(0xff3aa0));
+  eyeL.position.set(-0.1, 0.02, 0.23);
+  const eyeR = eyeL.clone(); eyeR.position.x = 0.1;
+  h.head.add(mask, eyeL, eyeR);
+  // dois chifres na máscara
+  for (const sx of [-1, 1]) {
+    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.4, 6), M(0xc8a83a));
+    horn.position.set(sx * 0.16, 0.34, 0);
+    horn.rotation.z = sx * 0.4;
+    h.head.add(horn);
+  }
+  // manto esvoaçante
+  const cloak = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.7), new THREE.MeshLambertMaterial({ color: 0x2a1030, side: THREE.DoubleSide }));
+  cloak.position.set(0, 1.5, -0.42); cloak.geometry.translate(0, -0.6, 0);
+  const cloakInner = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.5), new THREE.MeshBasicMaterial({ color: 0x6a1aa0, side: THREE.DoubleSide }));
+  cloakInner.position.set(0, 1.5, -0.4); cloakInner.geometry.translate(0, -0.55, 0);
+  g.add(cloak, cloakInner);
+  // espada de energia sombria (grande)
+  const bladeG = new THREE.Group();
+  bladeG.position.set(0, -0.86, 0.05);
+  bladeG.rotation.x = -Math.PI / 2 - 0.3;
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.13, 1.5, 0.05), basic(0x9a3aff));
+  blade.position.y = -0.8;
+  const core = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.5, 0.08), basic(0xe0b0ff));
+  core.position.y = -0.8;
+  const glow = new THREE.PointLight(0x9a3aff, 1.5, 8);
+  glow.position.y = -0.8;
+  bladeG.add(blade, core, glow);
+  h.armR.add(bladeG);
+  // aura sob os pés
+  const aura = new THREE.Mesh(new THREE.RingGeometry(0.6, 1.0, 24), new THREE.MeshBasicMaterial({ color: 0x8a2aff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }));
+  aura.rotation.x = -Math.PI / 2; aura.position.y = 0.05;
+  g.add(aura);
+  g.scale.setScalar(1.15);
+  shadows(g);
+  return { group: g, armL: h.armL, armR: h.armR, legL: h.legL, legR: h.legR, mats, legs: [h.legL, h.legR], cloak, aura };
+}
+
 // ---------------------------------------------------------------- balverine
 export function makeBalverine() {
   const g = new THREE.Group();

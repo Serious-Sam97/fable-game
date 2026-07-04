@@ -148,6 +148,8 @@ wss.on('connection', (ws, req) => {
       case 'surrender': sim.surrenderLeader(); break;
       case 'leaderResolve': sim.resolveLeader(!!m.spare, id); break;
       case 'spawnBalverine': sim.spawnBalverine(); break;
+      case 'spawnShadowKnight': sim.spawnShadowKnight(); break;
+      case 'spawnMalachi': sim.spawnMalachi(); break;
     }
   });
 

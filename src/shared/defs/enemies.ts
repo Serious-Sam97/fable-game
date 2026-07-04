@@ -82,6 +82,16 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
     renown: 8, speed: 3.2, aggro: 13, atkR: 3.4, atkCd: 2.8, icon: '🗿', plateH: 5.2, respawn: 120,
     slam: true,
   },
+  // ---- arco principal (spawnados via story, não no início) ----
+  cavaleiro_sombrio: {
+    name: 'Cavaleiro Sombrio', lvl: 7, hp: 420, dmg: [14, 20], xp: 350, gold: [40, 70],
+    renown: 6, speed: 5.0, aggro: 20, atkR: 2.5, atkCd: 1.4, icon: '🖤', plateH: 3.0, respawn: 0,
+  },
+  malachi: {
+    name: 'Lorde Malachi, o Herói Caído', lvl: 12, hp: 1200, dmg: [20, 30], xp: 1000, gold: [200, 300],
+    renown: 25, speed: 5.6, aggro: 30, atkR: 2.8, atkCd: 1.3, icon: '☠️', plateH: 3.4, respawn: 0,
+    slam: true, // golpe de energia sombria em área
+  },
 };
 
 // inimigos que "olham" pelo eixo +X (quadrúpedes/besouros); humanoides olham por +Z

@@ -1,12 +1,15 @@
 import * as THREE from 'three';
 import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core';
 import {
-  WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE,
+  WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE, RITUAL,
   terrainHeight, distToPath,
 } from '../shared/terrain';
 
 // terreno é compartilhado com o servidor (shared/terrain); re-exportado para o resto do cliente
-export { WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE, terrainHeight, distToPath };
+export { WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE, RITUAL, terrainHeight, distToPath };
+
+// estátua do herói que surge na praça ao vencer o arco principal (consequência visível)
+export const heroStatue = { group: null };
 
 // baú trancado da caverna — o jogo precisa saber onde ele está (chave de prata)
 export const lockedChest = { x: CAVE.x, z: CAVE.z - 13, opened: false, group: null };
@@ -48,6 +51,7 @@ export function buildWorld() {
   buildPort();
   buildGates();
   buildCave();
+  buildRitual();
   buildBanditCamp();
   buildOrchard();
   buildDarkForest();
@@ -783,6 +787,45 @@ function buildCave() {
   }
 }
 
+// ------------------------------------------------ Pedras do Ritual (clímax do arco)
+let ritualGlows = [];
+function buildRitual() {
+  const { x: cx, z: cz } = RITUAL;
+  const y0 = terrainHeight(cx, cz);
+  const stoneMat = lambert(0x5a5560);
+  // círculo de menires
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const sx = cx + Math.cos(a) * 9, sz = cz + Math.sin(a) * 9;
+    const sy = terrainHeight(sx, sz);
+    const h = 3.5 + rnd(i, 500) * 1.5;
+    const menhir = new THREE.Mesh(new THREE.BoxGeometry(1.2, h, 0.9), stoneMat);
+    menhir.position.set(sx, sy + h / 2, sz);
+    menhir.rotation.y = rnd(i, 501) * 0.4;
+    menhir.rotation.z = (rnd(i, 502) - 0.5) * 0.12;
+    menhir.castShadow = true;
+    scene.add(menhir);
+    colliders.push({ x: sx, z: sz, r: 0.9 });
+    // runas brilhantes
+    const rune = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ color: 0x8a2aff, transparent: true, opacity: 0.7 }));
+    rune.position.set(sx + Math.cos(a) * -0.5, sy + 1.8, sz + Math.sin(a) * -0.5);
+    rune.lookAt(cx, sy + 1.8, cz);
+    scene.add(rune);
+    ritualGlows.push(rune);
+  }
+  // altar central com selo de energia
+  const altar = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.6, 0.8, 10), lambert(0x48434e));
+  altar.position.set(cx, y0 + 0.4, cz);
+  altar.castShadow = true;
+  scene.add(altar);
+  const seal = new THREE.Mesh(new THREE.CircleGeometry(2.0, 32), new THREE.MeshBasicMaterial({ color: 0x6a1aa0, transparent: true, opacity: 0.5 }));
+  seal.rotateX(-Math.PI / 2);
+  seal.position.set(cx, y0 + 0.82, cz);
+  scene.add(seal);
+  ritualGlows.push(seal);
+  MAP_FEATURES.push({ x: cx, z: cz, color: '#8a2aff', r: 5 });
+}
+
 // ------------------------------------------------ recursos coletáveis (ervas + minério)
 function buildGatherables() {
   const herbMat = lambert(0x4a8a3a), flowerMat = lambert(0x8adcff);
@@ -842,6 +885,36 @@ function buildGatherables() {
     scene.add(model);
     gatherables.push({ kind: 'ore', x: gx, z: gz, model, cooldown: 0 });
   }
+}
+
+// estátua do herói na praça — consequência visível da vitória (final bondoso)
+export function spawnHeroStatue(evil = false) {
+  if (heroStatue.group) return;
+  const g = new THREE.Group();
+  const stone = evil ? 0x3a3240 : 0xd8d0c0;
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.5, 1.0, 8), lambert(0x8a8478));
+  base.position.y = 0.5;
+  const figBody = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 0.7, 6, 12), lambert(stone));
+  figBody.position.y = 1.7;
+  const figHead = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10), lambert(stone));
+  figHead.position.y = 2.5;
+  // espada erguida
+  const sword = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.3, 0.04), lambert(stone));
+  sword.position.set(0.5, 2.4, 0);
+  const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.5, 4, 8), lambert(stone));
+  arm.position.set(0.4, 2.0, 0); arm.rotation.z = -0.7;
+  g.add(base, figBody, figHead, sword, arm);
+  if (!evil) {
+    const halo = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.04, 8, 20), new THREE.MeshBasicMaterial({ color: 0xffe07a }));
+    halo.rotation.x = Math.PI / 2; halo.position.y = 2.95;
+    g.add(halo);
+  }
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  g.position.set(-6, terrainHeight(-6, -2), -2);
+  scene.add(g);
+  colliders.push({ x: -6, z: -2, r: 1.5 });
+  heroStatue.group = g;
+  MAP_FEATURES.push({ x: -6, z: -2, color: evil ? '#6a2a8a' : '#ffe07a', r: 2 });
 }
 
 // ------------------------------------------------ chuva
@@ -1115,6 +1188,10 @@ export function updateWorld(time, dt, playerPos) {
   for (const gl of gateGlows) {
     gl.rotation.z = time * 0.8;
     gl.material.opacity = 0.45 + Math.sin(time * 2.2) * 0.15;
+  }
+  // runas do ritual pulsando (energia sombria)
+  for (const r of ritualGlows) {
+    r.material.opacity = 0.4 + Math.sin(time * 1.8 + r.position.x) * 0.25;
   }
   // tochas da caverna bruxuleando
   for (const t of caveTorches) {

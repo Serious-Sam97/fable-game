@@ -157,14 +157,16 @@ decorando a casa — e ainda assim progredir.
 ## Fase 4 — Narrativa, Missões & Consequência
 *A alma de Fable: escolhas que deixam cicatriz no mundo.*
 
-- [ ] **Quest engine data-driven**: objetivos compostos (matar/coletar/escoltar/proteger/
-      investigar), etapas, ramificações, flags de mundo — missões viram arquivos, não código
-- [ ] **Sistema de diálogo com árvores** e checks (moralidade, renome, ouro, item na mochila)
-- [ ] **Arco principal** em 3 atos com vilão recorrente (um Herói corrompido estilo
-      Jack of Blades) — 10–15 missões com cutscenes de câmera scriptada
-- [ ] **Consequências visíveis**: salvar ou extorquir a vila muda o mundo — vila próspera
-      (feira nova, NPCs felizes) vs. oprimida (casas fechadas, mendigos); estado por jogador*
-      (*decisões de mundo em MP: votação do grupo ou estado por instância de missão)
+- [ ] **Quest engine data-driven**: objetivos compostos, etapas, ramificações — hoje as
+      quests são máquinas de estado em código; extrair para arquivos fica para depois
+- [ ] **Sistema de diálogo com árvores** e checks (moralidade, renome, ouro, item)
+- [~] **Arco principal — "A Sombra sobre Albion"** ✅ (3 atos): vilão Lorde Malachi
+      (Herói caído com máscara dourada estilo Jack of Blades), Cavaleiro Sombrio (tenente),
+      Pedras do Ritual (cenário do clímax com menires e selo); desbloqueia após o Balverine.
+      Falta expandir para 10-15 missões e cutscenes de câmera
+- [x] **Consequência visível + escolha moral no clímax**: redimir Malachi (😇 +30 bondade,
+      Espada Lendária, estátua com halo na praça) vs. executá-lo (😈 -30, Martelo Lendário,
+      estátua sombria) — o final fica gravado no mundo e no diálogo dos NPCs
 - [ ] **Side quests procedurais** no quadro de avisos: caçadas, entregas, escoltas, resgates
       — conteúdo infinito barato
 - [ ] Reputação por região (herói em Pedravento, criminoso no porto), disfarces

@@ -2,7 +2,7 @@
 // e no cliente como fallback solo. Sem Three.js, sem DOM: só números e eventos.
 import { ENEMY_DEFS } from '../defs/enemies';
 import { rnd } from '../math';
-import { BANDIT_CAMP, ORCHARD, DARK_FOREST, CRAB_BEACH, CAVE } from '../terrain';
+import { BANDIT_CAMP, ORCHARD, DARK_FOREST, CRAB_BEACH, CAVE, RITUAL } from '../terrain';
 
 export interface SimPlayerView {
   id: number;
@@ -136,6 +136,16 @@ export class EnemySim {
   spawnBalverine() {
     for (const e of this.enemies.values()) if (e.type === 'balverine' && e.state !== 'dead') return;
     this.spawn('balverine', DARK_FOREST.x, DARK_FOREST.z + 12);
+  }
+
+  spawnShadowKnight() {
+    for (const e of this.enemies.values()) if (e.type === 'cavaleiro_sombrio' && e.state !== 'dead') return;
+    this.spawn('cavaleiro_sombrio', DARK_FOREST.x + 6, DARK_FOREST.z - 6);
+  }
+
+  spawnMalachi() {
+    for (const e of this.enemies.values()) if (e.type === 'malachi' && e.state !== 'dead') return;
+    this.spawn('malachi', RITUAL.x, RITUAL.z);
   }
 
   getLeader(): SimEnemy | undefined {
