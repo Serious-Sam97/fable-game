@@ -18,6 +18,7 @@ const flames = [];
 const smokes = [];
 let stars, moonSprite, sunSprite, fireflies, water, waterGeo;
 let rain, seaWater, lightBeam, lightBeamTarget;
+export let forSaleSign = null;
 const boats = [];
 const gateGlows = [];
 const clouds = [];
@@ -438,6 +439,26 @@ function buildVillage() {
   }
   addLamp(-4, -6); addLamp(6, -8); addLamp(-6, 7); addLamp(8, 8);
   addCampfire(3, -3);
+  // placa "À Venda" na cabana comprável (15,8)
+  {
+    const g = new THREE.Group();
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.4, 5), lambert(0x5a4530));
+    post.position.y = 0.7;
+    const board = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.55, 0.06), lambert(0xd8c89a));
+    board.position.y = 1.2;
+    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 80;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#3a2a12'; ctx.font = 'bold 22px Georgia'; ctx.textAlign = 'center';
+    ctx.fillText('À VENDA', 64, 34); ctx.font = '16px Georgia'; ctx.fillText('500 🪙', 64, 60);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.5), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }));
+    sign.position.set(0, 1.2, 0.04);
+    g.add(post, board, sign);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.position.set(15, terrainHeight(15, 11.8), 11.8);
+    g.userData.forSaleSign = true; // o jogo esconde quando a casa é comprada
+    scene.add(g);
+    forSaleSign = g;
+  }
   // fences along plaza edge
   const fenceMat = lambert(0x5a4530);
   for (let i = 0; i < 14; i++) {

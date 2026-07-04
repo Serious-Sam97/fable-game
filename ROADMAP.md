@@ -128,16 +128,19 @@ dungeon de formas completamente diferentes.
 - [x] **Cullis Gates** ✅ — fast travel vila ↔ porto (F no portal, efeito + som)
 
 ### Vida
-- [ ] **NPCs com rotina**: acordam, trabalham, almoçam, vão à taverna, dormem
-      (lojas fecham à noite!)
+- [x] **NPCs com rotina dia/noite**: de dia trabalham no posto / vagam; à noite
+      caminham até a cama e dormem (somem em casa); lojas fecham à noite ✅
+      (falta: almoço/taverna, horários mais ricos)
 - [x] **Clima**: chuva determinística (mesma para todos no co-op, derivada da hora do
       mundo) escurece o céu e aproxima a névoa; neblina/tempestade pendentes
 - [ ] Fauna ambiente: cervos (caçáveis), pássaros, peixes pulando
-- [ ] **Profissões de coleta**: pesca (minigame de timing), mineração, herbalismo, lenhador
+- [x] **Pesca** ✅ (minigame de timing perto d'água, 5 tipos de peixe + bota velha,
+      treina Habilidade, vendável ao Barnum/Sal); mineração/herbalismo/lenhador pendentes
 - [ ] **Crafting**: forja (armas/armaduras), alquimia (poções), cozinha (buffs)
 - [ ] **Economia viva**: preços variam por estoque e região; rotas de comércio entre cidades
-      (comprar barato no porto, vender caro na montanha)
-- [ ] **Casas compráveis** com decoração e baú pessoal; aluguel como renda passiva — Fable puro
+- [x] **Casa comprável** ✅ (cabana em Pedravento, 500🪙): aluguel passivo de 25🪙/dia
+      coletável na porta + descanso até o amanhecer (cura total) — Fable puro;
+      falta: decoração e baú pessoal
 - [ ] Crimes: roubar/atacar aldeão → guardas, multa, prisão ou fama sombria
 
 **Pronto quando:** dá para passar uma sessão inteira sem combate — pescando, negociando,

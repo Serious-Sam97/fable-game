@@ -5,7 +5,7 @@ import {
 } from './core';
 import {
   WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
-  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, colliders,
+  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, colliders, forSaleSign,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
@@ -50,8 +50,13 @@ const player = {
   rollT: 0, rollDirX: 0, rollDirZ: 1, invulnT: 0,
   lastDirX: 0, lastDirZ: 1,
   blocking: false, blockStartT: -99,
+  fish: 0,                                  // peixes na sacola (vendáveis)
+  ownedHouse: false, rentDay: 0,            // casa comprável (Fable) + aluguel por dia
 };
 const hasTalent = (k) => !!player.talents[k];
+
+// casa à venda em Pedravento (a cabana em 15,8) — porta virada para o sul
+const HOUSE = { x: 15, z: 8, doorX: 15, doorZ: 11.5, price: 500, rentPerDay: 25 };
 player.pos.y = terrainHeight(player.pos.x, player.pos.z);
 const xpToNext = (lvl) => 90 + lvl * 60;
 const maxHpFor = (lvl) => 110 + (lvl - 1) * 24;
@@ -243,20 +248,30 @@ function addNpc(name, model, x, z, opts = {}) {
   marker.position.y = 3.1;
   marker.visible = false;
   model.group.add(marker);
-  const npc = { name, model, pos: new THREE.Vector3(x, y, z), plate, marker, role: opts.role, wander: opts.wander, home: new THREE.Vector3(x, y, z), wTarget: null, wTimer: rnd(x, z) * 5, sayT: 4 + rnd(z, x) * 8 };
+  const npc = {
+    name, model, pos: new THREE.Vector3(x, y, z), plate, marker,
+    role: opts.role, wander: opts.wander,
+    home: new THREE.Vector3(x, y, z),               // posto de trabalho (dia)
+    postRot: opts.rot ?? 0,
+    bed: opts.bed ? new THREE.Vector3(opts.bed[0], 0, opts.bed[1]) : new THREE.Vector3(x, y, z),
+    wTarget: null, wTimer: rnd(x, z) * 5, sayT: 4 + rnd(z, x) * 8, asleep: false,
+  };
   npcs.push(npc);
   return npc;
 }
 
-const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster' });
-const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper' });
-const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor' });
-addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true });
-addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true });
+// bed = casa onde o NPC dorme à noite (perto das cabanas)
+const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster', bed: [-13, -3] });
+const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper', bed: [-9, 11] });
+const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor', bed: [14, 7] });
+addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true, bed: [-9, 11] });
+addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true, bed: [13, -9] });
 // Porto Bruma
-const jonas = addNpc('Pescador Jonas', makeVillager({ robe: 0x3a5a6e, hair: 0x8a8a7a, beard: true }), PORT.x + 14, PORT.z + 1, { rot: -1.6, role: 'fisher' });
-addNpc('Mercadora Sal', makeVillager({ robe: 0x6e3a5a, hair: 0x2a2a2a, hat: 'hood' }), 221, 47.8, { rot: 0.6, role: 'vendor2' });
-addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x - 4, PORT.z + 10, { wander: true });
+const jonas = addNpc('Pescador Jonas', makeVillager({ robe: 0x3a5a6e, hair: 0x8a8a7a, beard: true }), PORT.x + 14, PORT.z + 1, { rot: -1.6, role: 'fisher', bed: [214, 30] });
+addNpc('Mercadora Sal', makeVillager({ robe: 0x6e3a5a, hair: 0x2a2a2a, hat: 'hood' }), 221, 47.8, { rot: 0.6, role: 'vendor2', bed: [212, 50] });
+addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x - 4, PORT.z + 10, { wander: true, bed: [228, 26] });
+
+const shopsOpen = () => SKY.nightF < 0.55; // lojas fecham à noite
 
 // ============================================================ chickens
 const chickens = [];
@@ -1025,9 +1040,11 @@ function talkTo(npc) {
       showDialog('Whisper', 'Nada mal para um novato, hein? Até a próxima caçada.', '', [closeBtn]);
     }
   } else if (npc.role === 'vendor') {
-    openShop();
+    if (shopsOpen()) openShop();
+    else showDialog('Barnum', '"A loja está fechada, amigo. Volte com a luz do dia!"', '', [closeBtn]);
   } else if (npc.role === 'vendor2') {
-    openShopSal();
+    if (shopsOpen()) openShopSal();
+    else showDialog('Mercadora Sal', '"Fechado até o amanhecer, forasteiro."', '', [closeBtn]);
   } else if (npc.role === 'fisher') {
     if (quests.q4.state === 'available') {
       showDialog('Maré Vermelha',
@@ -1079,6 +1096,7 @@ function openShop() {
     buttons.push({ label: `${a.icon} ${a.name} — ${a.price} 🪙`, cb: buy(a.price, () => addItem({ arm: ak, rar: 'comum' })) });
   }
   if (!player.luckCharm) buttons.push({ label: '🍀 Amuleto da Sorte — 300 🪙 (+8% dano)', cb: buy(300, () => { player.luckCharm = true; toast('Comprou: Amuleto da Sorte (+8% dano)'); saveGame(); }) });
+  if (player.fish > 0) buttons.push({ label: `🐟 Vender ${player.fish} peixe(s) — ${player.fish * 12} 🪙`, cls: 'good', cb: () => { player.gold += player.fish * 12; toast(`Vendeu ${player.fish} peixe(s)`); player.fish = 0; saveGame(); beep(1250, 0.1, 'sine', 0.05); openShop(); } });
   buttons.push(closeBtn);
   showDialog('Barnum, o Mercador',
     `"Uma pechincha fabulosa, amigo! Palavra de Barnum." — Você tem ${player.gold} 🪙`,
@@ -1099,8 +1117,9 @@ function openShopSal() {
     { label: '👖 Calças de Couro — 60 🪙', cb: buy(60, () => addItem({ arm: 'couro_calcas', rar: 'comum' })) },
     { label: '🥾 Botas de Ferro — 120 🪙', cb: buy(120, () => addItem({ arm: 'ferro_botas', rar: 'comum' })) },
     { label: '⛓️ Grevas de Ferro — 180 🪙', cb: buy(180, () => addItem({ arm: 'ferro_grevas', rar: 'comum' })) },
-    closeBtn,
   ];
+  if (player.fish > 0) buttons.push({ label: `🐟 Vender ${player.fish} peixe(s) — ${player.fish * 14} 🪙 (bom preço!)`, cls: 'good', cb: () => { player.gold += player.fish * 14; toast(`Vendeu ${player.fish} peixe(s)`); player.fish = 0; saveGame(); beep(1250, 0.1, 'sine', 0.05); openShopSal(); } });
+  buttons.push(closeBtn);
   showDialog('Mercadora Sal',
     `"Direto dos navios, forasteiro — mercadoria que o Barnum nem sonha." — Você tem ${player.gold} 🪙`,
     '', buttons);
@@ -1328,6 +1347,122 @@ function toggleCharPanel() {
 }
 
 // ============================================================ interactions
+// ============================================================ pesca (minigame de timing)
+const fishing = { active: false, phase: 'idle', mark: 0, dir: 1, zoneStart: 0, zoneW: 0, waitT: 0 };
+const FISH_KINDS = [
+  { name: 'Sardinha', icon: '🐟', gold: 8, w: 40 },
+  { name: 'Truta', icon: '🐠', gold: 18, w: 30 },
+  { name: 'Robalo', icon: '🐡', gold: 30, w: 18 },
+  { name: 'Salmão Real', icon: '🐟', gold: 55, w: 9 },
+  { name: 'Bota velha', icon: '🥾', gold: 1, w: 12 },
+];
+function nearWater() {
+  // borda de qualquer corpo d'água: perto o suficiente do centro, mas em terra seca
+  for (const w of WATERS) {
+    const d = Math.hypot(player.pos.x - w.x, player.pos.z - w.z);
+    if (d < w.r + w.shore + 3 && d > w.r - 2 && terrainHeight(player.pos.x, player.pos.z) > w.waterY - 0.4) return true;
+  }
+  return false;
+}
+function startFishing() {
+  if (fishing.active) return;
+  fishing.active = true;
+  fishing.phase = 'wait';
+  fishing.waitT = 0.8 + Math.random() * 2.5;
+  $('fishing').style.display = 'block';
+  $('fishMsg').textContent = 'Esperando um peixe morder…';
+  $('fishZone').style.opacity = '0';
+  $('fishMark').style.left = '0%';
+  beep(300, 0.2, 'sine', 0.04, 60);
+}
+function endFishing(msg) {
+  fishing.active = false;
+  fishing.phase = 'idle';
+  $('fishing').style.display = 'none';
+  if (msg) floatText(player.pos, msg, '#8fd0ff', 15);
+}
+function updateFishing(dt) {
+  if (!fishing.active) return;
+  if (player.moving || player.dead) { endFishing('escapou…'); return; }
+  if (fishing.phase === 'wait') {
+    fishing.waitT -= dt;
+    if (fishing.waitT <= 0) {
+      fishing.phase = 'bite';
+      fishing.zoneW = 22 + Math.random() * 14;             // largura da zona verde (%)
+      fishing.zoneStart = 8 + Math.random() * (92 - fishing.zoneW - 8);
+      fishing.mark = 0; fishing.dir = 1;
+      $('fishZone').style.opacity = '0.85';
+      $('fishZone').style.left = fishing.zoneStart + '%';
+      $('fishZone').style.width = fishing.zoneW + '%';
+      $('fishMsg').textContent = 'FISGA! Espaço na zona verde!';
+      beep(700, 0.1, 'square', 0.05);
+    }
+  } else if (fishing.phase === 'bite') {
+    fishing.mark += fishing.dir * dt * 95;
+    if (fishing.mark >= 100) { fishing.mark = 100; fishing.dir = -1; }
+    if (fishing.mark <= 0) { fishing.mark = 0; fishing.dir = 1; }
+    $('fishMark').style.left = fishing.mark + '%';
+  }
+}
+function hookFish() {
+  if (!fishing.active || fishing.phase !== 'bite') { if (fishing.active) endFishing('cedo demais…'); return; }
+  const inZone = fishing.mark >= fishing.zoneStart && fishing.mark <= fishing.zoneStart + fishing.zoneW;
+  if (!inZone) { endFishing('errou o tempo!'); beep(140, 0.2, 'square', 0.05); return; }
+  let total = FISH_KINDS.reduce((s, f) => s + f.w, 0), roll = Math.random() * total;
+  let fish = FISH_KINDS[0];
+  for (const f of FISH_KINDS) { roll -= f.w; if (roll <= 0) { fish = f; break; } }
+  player.fish++;
+  player.gold += fish.gold;
+  gainDiscXP('skl', 12); // pesca treina Habilidade
+  toast(`${fish.icon} Pescou: ${fish.name} (+${fish.gold} 🪙)`);
+  beep(900, 0.1, 'sine', 0.05); setTimeout(() => beep(1300, 0.15, 'sine', 0.05), 110);
+  ringEffect(player.pos, 0x7fd0ff, 2);
+  endFishing('');
+  saveGame();
+}
+
+// ============================================================ casa
+function houseRentDue() {
+  return player.ownedHouse ? Math.max(0, (SKY.day - player.rentDay) * HOUSE.rentPerDay) : 0;
+}
+function openHouseDialog() {
+  if (!player.ownedHouse) {
+    showDialog('Casa à Venda — Pedravento',
+      'Uma aconchegante cabana de pedra e palha, com lareira e vista para a praça. Uma escritura e ela é sua, herói.',
+      `Preço: ${HOUSE.price} 🪙 · rende ${HOUSE.rentPerDay} 🪙 de aluguel por dia`,
+      [{ label: `Comprar (${HOUSE.price} 🪙)`, cls: 'good', cb: () => {
+        if (player.gold < HOUSE.price) { errorMsg('Ouro insuficiente'); return; }
+        player.gold -= HOUSE.price;
+        player.ownedHouse = true;
+        player.rentDay = SKY.day;
+        gainRenown(5); changeMorality(2);
+        toast('🏠 Você agora tem um lar em Pedravento!');
+        centerMsg('Um lar em Albion', 'Descanse aqui e receba o aluguel dos inquilinos');
+        saveGame();
+      } }, closeBtn]);
+  } else {
+    const rent = houseRentDue();
+    showDialog('Seu Lar — Pedravento',
+      rent > 0 ? `Os inquilinos deixaram ${rent} 🪙 de aluguel na sua porta.` : 'Seu lar, doce lar. Ainda sem aluguel novo — volte em outro dia.',
+      '',
+      [
+        ...(rent > 0 ? [{ label: `Coletar ${rent} 🪙`, cls: 'good', cb: () => {
+          player.gold += rent; player.rentDay = SKY.day;
+          toast(`🪙 +${rent} de aluguel`); beep(1250, 0.1, 'sine', 0.05); saveGame();
+        } }] : []),
+        { label: 'Descansar até o amanhecer', cb: () => {
+          SKY.day += SKY.dayT > 0.1 ? 1 : 0;
+          SKY.dayT = 0.1;
+          player.hp = player.maxHp; player.will = player.maxWill; player.stam = player.maxStam;
+          centerMsg('Você descansou', 'Um novo dia nasce sobre Albion');
+          floatText(player.pos, 'zzz… 😴', '#8fa8d8', 18);
+          saveGame();
+        } },
+        closeBtn,
+      ]);
+  }
+}
+
 function nearestInteract() {
   let best = null;
   const consider = (dist, max, label, cb) => {
@@ -1342,11 +1477,17 @@ function nearestInteract() {
     consider(ch.pos.distanceTo(player.pos), 3.2, 'Abrir o baú', () => openChest(ch));
   }
   for (const n of npcs) {
+    if (n.asleep) continue; // dormindo — não dá pra conversar de madrugada
     consider(n.pos.distanceTo(player.pos), 5.5, `Falar com ${n.name}`, () => talkTo(n));
   }
   const ldr = getLeader();
   if (ldr && ldr.state === 'surrender') {
     consider(ldr.pos.distanceTo(player.pos), 5, 'Decidir o destino do Rufião', confrontLeader);
+  }
+  const dHouse = Math.hypot(HOUSE.doorX - player.pos.x, HOUSE.doorZ - player.pos.z);
+  consider(dHouse, 3.2, player.ownedHouse ? (houseRentDue() > 0 ? 'Entrar em casa 🏠 (aluguel!)' : 'Entrar em casa 🏠') : 'Ver casa à venda 🏠', openHouseDialog);
+  if (!fishing.active && nearWater()) {
+    consider(2.0, 3, 'Pescar 🎣', startFishing); // prioridade alta perto d'água
   }
   for (const g of GATES) {
     consider(Math.hypot(g.x - player.pos.x, g.z - player.pos.z), 3.8, 'Atravessar o Portal Cullis ✨', () => travelGate(g));
@@ -1406,7 +1547,8 @@ addEventListener('keydown', (ev) => {
     if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
     return;
   }
-  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; return; }
+  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; if (fishing.active) endFishing(); return; }
+  if (fishing.active) { if (ev.code === 'Space') { ev.preventDefault(); hookFish(); } return; }
   if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
   if (ev.code === 'KeyC') { toggleCharPanel(); return; }
   if (ev.code === 'KeyI') { toggleInventory(); return; }
@@ -1509,6 +1651,7 @@ function buildSaveData() {
     q4: { state: quests.q4.state, count: quests.q4.count },
     disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
     talents: player.talents,
+    fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
   };
 }
 function saveGame() {
@@ -1534,6 +1677,9 @@ function applySaveData(data) {
   player.equipped = data.equipped && WEAPONS[data.equipped.wpn] ? data.equipped : { wpn: 'espada_gasta', rar: 'comum' };
   player.armor = data.armor ?? { head: null, chest: null, legs: null, boots: null };
   player.talents = data.talents ?? {};
+  player.fish = data.fish ?? 0;
+  player.ownedHouse = !!data.ownedHouse;
+  player.rentDay = data.rentDay ?? 0;
   recomputeMaxes();
   player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
   player.will = clamp(data.will ?? player.maxWill, 0, player.maxWill);
@@ -1743,11 +1889,41 @@ function updateChicken(c, dt) {
   c.model.group.position.copy(c.pos);
 }
 
-// ============================================================ NPC ambient
+// ============================================================ NPC ambient & rotina diária
+function walkNpcTo(n, tx, tz, speed, dt) {
+  const dx = tx - n.pos.x, dz = tz - n.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d > 0.4) {
+    n.pos.x += (dx / d) * speed * dt;
+    n.pos.z += (dz / d) * speed * dt;
+    n.model.group.rotation.y = Math.atan2(dx, dz);
+    return false;
+  }
+  return true; // chegou
+}
+
 function updateNpc(n, dt) {
+  const dP = n.pos.distanceTo(player.pos);
+  const night = SKY.nightF > 0.6;
+
+  if (night) {
+    // vai para a cama e "dorme" (some dentro de casa, retorna de dia)
+    const atBed = walkNpcTo(n, n.bed.x, n.bed.z, 1.8, dt);
+    if (atBed) {
+      n.asleep = true;
+      n.model.group.visible = false;
+      if (dP < 12 && Math.random() < dt * 0.4) floatText(n.bed, '💤', '#8fa8d8', 14);
+    }
+    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+    n.model.group.position.copy(n.pos);
+    return;
+  }
+
+  // amanheceu — acorda
+  if (n.asleep) { n.asleep = false; n.model.group.visible = true; }
+
   if (n.wander) {
     const evil = player.morality <= -40;
-    const dP = n.pos.distanceTo(player.pos);
     if (evil && dP < 7) {
       const away = n.pos.clone().sub(player.pos).setY(0).normalize();
       n.pos.addScaledVector(away, 3 * dt);
@@ -1759,29 +1935,27 @@ function updateNpc(n, dt) {
         const a = Math.random() * Math.PI * 2;
         n.wTarget = n.home.clone().add(new THREE.Vector3(Math.cos(a) * 7, 0, Math.sin(a) * 7));
       }
-      if (n.wTarget) {
-        const d = n.wTarget.clone().sub(n.pos).setY(0);
-        if (d.length() > 0.5) {
-          d.normalize();
-          n.pos.addScaledVector(d, 1.5 * dt);
-          n.model.group.rotation.y = Math.atan2(d.x, d.z);
-        }
-      }
+      if (n.wTarget) walkNpcTo(n, n.wTarget.x, n.wTarget.z, 1.5, dt);
     }
     const np = resolveStatic(n.pos.x, n.pos.z, 0.4);
     n.pos.x = np[0]; n.pos.z = np[1];
-    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
-    n.model.group.position.copy(n.pos);
-    // ambient chatter
-    n.sayT -= dt;
-    if (n.sayT <= 0 && dP < 9) {
-      n.sayT = 14 + Math.random() * 14;
-      const good = player.morality >= 40;
-      const lines = evil ? ['Socorro!', 'É um monstro!'] : good ? ['Um herói!', 'Que auréola!'] : ['Bom dia!', 'Belo dia, não?'];
-      floatText(n.pos, lines[Math.floor(Math.random() * lines.length)], '#ffe07a', 13);
-    } else if (n.sayT <= 0) {
-      n.sayT = 10;
-    }
+  } else {
+    // trabalhadores fixos voltam ao posto de dia e reassumem a pose
+    const atPost = walkNpcTo(n, n.home.x, n.home.z, 1.8, dt);
+    if (atPost) n.model.group.rotation.y = n.postRot;
+  }
+  n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+  n.model.group.position.copy(n.pos);
+
+  // ambient chatter
+  n.sayT -= dt;
+  if (n.sayT <= 0 && dP < 9) {
+    n.sayT = 14 + Math.random() * 14;
+    const good = player.morality >= 40;
+    const lines = (player.morality <= -40) ? ['Socorro!', 'É um monstro!'] : good ? ['Um herói!', 'Que auréola!'] : ['Bom dia!', 'Belo dia, não?'];
+    floatText(n.pos, lines[Math.floor(Math.random() * lines.length)], '#ffe07a', 13);
+  } else if (n.sayT <= 0) {
+    n.sayT = 10;
   }
 }
 
@@ -1997,6 +2171,8 @@ function tick() {
     for (const c of drainChat()) addChatLine(c.name, c.text, c.pid === 0);
     for (const c of chickens) updateChicken(c, dt);
     for (const n of npcs) updateNpc(n, dt);
+    updateFishing(dt);
+    if (forSaleSign) forSaleSign.visible = !player.ownedHouse;
     guildmasterHints(dt);
     updateOrbs(dt);
     updateRemoteHeroes(dt);
