@@ -6,6 +6,7 @@ import {
 import {
   WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
   chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
+  gatherables, FORGE, CAULDRON,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
@@ -14,7 +15,7 @@ import {
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
-import { WEAPONS, ARMORS, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
+import { WEAPONS, ARMORS, RARITIES, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
@@ -53,6 +54,7 @@ const player = {
   fish: 0,                                  // peixes na sacola (vendáveis)
   ownedHouse: false, rentDay: 0,            // casa comprável (Fable) + aluguel por dia
   silverKey: false,                         // Chave de Prata do Capitão Hobbe
+  mats: { herb: 0, ore: 0 },                // materiais de crafting
 };
 const hasTalent = (k) => !!player.talents[k];
 
@@ -1341,6 +1343,7 @@ function updateCharPanel() {
   $('cKills').textContent = player.kills;
   $('cDef').textContent = `${totalDefense().toFixed(0)} (${Math.round(damageReduction() * 100)}% redução)`;
   $('cWeight').textContent = totalWeight() === 0 ? 'leve' : `${totalWeight()} (rolamento custa ${Math.round(rollCost())})`;
+  $('cMats').textContent = `🌿 ${player.mats.herb}  ⛏️ ${player.mats.ore}  🐟 ${player.fish}`;
   $('dStrLvl').textContent = player.disc.str.lvl;
   $('dSklLvl').textContent = player.disc.skl.lvl;
   $('dWilLvl').textContent = player.disc.wil.lvl;
@@ -1472,6 +1475,80 @@ function openHouseDialog() {
   }
 }
 
+// ============================================================ coleta & crafting
+function gatherNode(node) {
+  if (node.cooldown > 0) return;
+  const amt = 1 + Math.floor(Math.random() * 2);
+  if (node.kind === 'herb') {
+    player.mats.herb += amt;
+    floatText(player.pos, `🌿 +${amt} Erva`, '#8adcff', 15);
+    beep(600, 0.1, 'sine', 0.04, 120);
+  } else {
+    player.mats.ore += amt;
+    gainDiscXP('str', 8); // minerar treina Força
+    floatText(player.pos, `⛏️ +${amt} Minério`, '#bfe0ff', 15);
+    noiseBurst(0.12, 0.04);
+    beep(280, 0.12, 'square', 0.04, -80);
+  }
+  node.cooldown = 35;
+  node.model.visible = false;
+  saveGame();
+}
+
+const nextRarity = (key) => {
+  const i = RARITIES.findIndex((r) => r.key === key);
+  return i >= 0 && i < RARITIES.length - 1 ? RARITIES[i + 1] : null;
+};
+function openForge() {
+  const eq = player.equipped;
+  const w = WEAPONS[eq.wpn];
+  const next = nextRarity(eq.rar);
+  const lines = [];
+  const buttons = [];
+  if (!next) {
+    lines.push(`Sua ${w.name} já é Lendária — não há como forjá-la melhor.`);
+  } else {
+    const oreCost = 2 + RARITIES.findIndex((r) => r.key === next.key) * 2;
+    const goldCost = 60 + RARITIES.findIndex((r) => r.key === next.key) * 90;
+    lines.push(`Melhorar ${w.name} (${rarityOf(eq.rar).name} → ${next.name}).`);
+    buttons.push({ label: `Forjar — ${oreCost}⛏️ + ${goldCost}🪙`, cls: 'good', cb: () => {
+      if (player.mats.ore < oreCost) { errorMsg('Minério insuficiente'); return; }
+      if (player.gold < goldCost) { errorMsg('Ouro insuficiente'); return; }
+      player.mats.ore -= oreCost; player.gold -= goldCost;
+      eq.rar = next.key;
+      updateHeroBody();
+      toast(`⚒️ ${w.name} agora é ${next.name}!`);
+      centerMsg('Arma forjada!', `${w.name} — ${next.name}`);
+      ringEffect(player.pos, 0xff7a2a, 3);
+      beep(300, 0.1, 'square', 0.05); setTimeout(() => beep(1100, 0.2, 'sine', 0.06), 150);
+      saveGame();
+    } });
+  }
+  showDialog('⚒️ A Forja',
+    `${lines.join(' ')}\n\nMateriais: ⛏️ ${player.mats.ore} minério · 🪙 ${player.gold} ouro`,
+    '', [...buttons, closeBtn]);
+}
+
+function openCauldron() {
+  const brew = (cost, cb, label) => () => {
+    if (player.mats.herb < (cost.herb || 0) || player.mats.ore < (cost.ore || 0)) { errorMsg('Materiais insuficientes'); openCauldron(); return; }
+    player.mats.herb -= cost.herb || 0; player.mats.ore -= cost.ore || 0;
+    cb();
+    beep(500, 0.2, 'sine', 0.05, 150);
+    ringEffect(player.pos, 0x7fe07a, 2);
+    saveGame();
+    openCauldron();
+  };
+  showDialog('🧪 Caldeirão de Alquimia',
+    `As ervas de Albion fervem em segredos.\n\nMateriais: 🌿 ${player.mats.herb} erva · ⛏️ ${player.mats.ore} minério`,
+    '',
+    [
+      { label: '🧪 Poção de Vida (3🌿)', cb: brew({ herb: 3 }, () => { player.potions.hp++; toast('Preparou: Poção de Vida'); }) },
+      { label: '🔮 Poção de Vontade (2🌿 + 1⛏️)', cb: brew({ herb: 2, ore: 1 }, () => { player.potions.will++; toast('Preparou: Poção de Vontade'); }) },
+      closeBtn,
+    ]);
+}
+
 // ============================================================ Caverna dos Hobbes
 function caveTeleport(x, z, title, sub) {
   ringEffect(player.pos, 0x8a6d4a, 5);
@@ -1537,6 +1614,15 @@ function nearestInteract() {
   consider(dHouse, 3.2, player.ownedHouse ? (houseRentDue() > 0 ? 'Entrar em casa 🏠 (aluguel!)' : 'Entrar em casa 🏠') : 'Ver casa à venda 🏠', openHouseDialog);
   if (!fishing.active && nearWater()) {
     consider(2.0, 3, 'Pescar 🎣', startFishing); // prioridade alta perto d'água
+  }
+  // estações de crafting
+  consider(Math.hypot(FORGE.x - player.pos.x, FORGE.z - player.pos.z), 3, 'Usar a Forja ⚒️', openForge);
+  consider(Math.hypot(CAULDRON.x - player.pos.x, CAULDRON.z - player.pos.z), 3, 'Usar o Caldeirão 🧪', openCauldron);
+  // nós de coleta
+  for (const node of gatherables) {
+    if (node.cooldown > 0) continue;
+    consider(Math.hypot(node.x - player.pos.x, node.z - player.pos.z), 2.6,
+      node.kind === 'herb' ? 'Colher erva 🌿' : 'Minerar minério ⛏️', () => gatherNode(node));
   }
   // boca da caverna (mundo aberto) ↔ interior
   const dMouth = Math.hypot(CAVE.entX - player.pos.x, CAVE.entZ - player.pos.z);
@@ -1713,6 +1799,7 @@ function buildSaveData() {
     talents: player.talents,
     fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
     silverKey: player.silverKey, lockedChestOpened: lockedChest.opened,
+    mats: player.mats,
   };
 }
 function saveGame() {
@@ -1742,6 +1829,7 @@ function applySaveData(data) {
   player.ownedHouse = !!data.ownedHouse;
   player.rentDay = data.rentDay ?? 0;
   player.silverKey = !!data.silverKey;
+  player.mats = data.mats ?? { herb: 0, ore: 0 };
   if (data.lockedChestOpened) {
     lockedChest.opened = true;
     if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
@@ -2239,6 +2327,12 @@ function tick() {
     for (const n of npcs) updateNpc(n, dt);
     updateFishing(dt);
     if (forSaleSign) forSaleSign.visible = !player.ownedHouse;
+    for (const node of gatherables) {
+      if (node.cooldown > 0) {
+        node.cooldown -= dt;
+        if (node.cooldown <= 0) node.model.visible = true; // recresce
+      }
+    }
     guildmasterHints(dt);
     updateOrbs(dt);
     updateRemoteHeroes(dt);
@@ -2398,7 +2492,8 @@ addEventListener('beforeunload', saveGame);
 // debug / experimental hooks
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
-  gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate, heroModel,
+  gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate,
+  gatherables, FORGE, CAULDRON, heroModel,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },

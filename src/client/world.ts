@@ -11,6 +11,12 @@ export { WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CR
 // baú trancado da caverna — o jogo precisa saber onde ele está (chave de prata)
 export const lockedChest = { x: CAVE.x, z: CAVE.z - 13, opened: false, group: null };
 
+// nós de coleta (ervas e minério) — o jogo cuida da colheita/respawn
+export const gatherables = [];
+// estações de crafting (pontos de interação)
+export const FORGE = { x: 6, z: 5 };
+export const CAULDRON = { x: -3, z: 2 };
+
 // clima — determinístico a partir da hora do mundo: todos os clientes veem a mesma chuva
 export const weather = { rainF: 0, raining: false };
 
@@ -46,6 +52,7 @@ export function buildWorld() {
   buildOrchard();
   buildDarkForest();
   buildChests();
+  buildGatherables();
   buildAmbientLife();
   buildRain();
 }
@@ -443,6 +450,50 @@ function buildVillage() {
   }
   addLamp(-4, -6); addLamp(6, -8); addLamp(-6, 7); addLamp(8, 8);
   addCampfire(3, -3);
+  // Forja (bigorna + fornalha brilhante)
+  {
+    const g = new THREE.Group();
+    const stump = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.45, 0.8, 8), lambert(0x4a3520));
+    stump.position.y = 0.4;
+    const anvil = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.4), lambert(0x3a3a42));
+    anvil.position.y = 0.95;
+    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.4, 6), lambert(0x3a3a42));
+    horn.rotation.z = -Math.PI / 2; horn.position.set(0.6, 0.95, 0);
+    const forge = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.0, 1.2), lambert(0x55504a));
+    forge.position.set(-1.4, 0.5, 0);
+    const coals = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.8), new THREE.MeshBasicMaterial({ color: 0xff6a1a }));
+    coals.position.set(-1.4, 1.05, 0);
+    const forgeLight = new THREE.PointLight(0xff7a2a, 1.6, 8);
+    forgeLight.position.set(-1.4, 1.4, 0);
+    g.add(stump, anvil, horn, forge, coals, forgeLight);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.position.set(FORGE.x, terrainHeight(FORGE.x, FORGE.z), FORGE.z);
+    scene.add(g);
+    colliders.push({ x: FORGE.x, z: FORGE.z, r: 1.2 });
+    colliders.push({ x: FORGE.x - 1.4, z: FORGE.z, r: 0.9 });
+    flames.push({ flame: coals, inner: coals, light: forgeLight }); // reaproveita o pulsar
+  }
+  // Caldeirão de alquimia
+  {
+    const g = new THREE.Group();
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.4, 0.7, 12), lambert(0x2a2a30));
+    pot.position.y = 0.55;
+    const brew = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.1, 12), new THREE.MeshBasicMaterial({ color: 0x7fe07a }));
+    brew.position.y = 0.88;
+    const brewLight = new THREE.PointLight(0x7fe07a, 0.8, 5);
+    brewLight.position.y = 1.1;
+    for (let i = 0; i < 3; i++) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.4, 5), lambert(0x1a1a20));
+      const a = (i / 3) * Math.PI * 2;
+      leg.position.set(Math.cos(a) * 0.4, 0.2, Math.sin(a) * 0.4);
+      g.add(leg);
+    }
+    g.add(pot, brew, brewLight);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.position.set(CAULDRON.x, terrainHeight(CAULDRON.x, CAULDRON.z), CAULDRON.z);
+    scene.add(g);
+    colliders.push({ x: CAULDRON.x, z: CAULDRON.z, r: 0.7 });
+  }
   // placa "À Venda" na cabana comprável (15,8)
   {
     const g = new THREE.Group();
@@ -729,6 +780,67 @@ function buildCave() {
     colliders.push({ x: entX - 1.6, z: entZ, r: 1.2 });
     colliders.push({ x: entX + 1.6, z: entZ, r: 1.2 });
     MAP_FEATURES.push({ x: entX, z: entZ, color: '#1a1610', r: 3 });
+  }
+}
+
+// ------------------------------------------------ recursos coletáveis (ervas + minério)
+function buildGatherables() {
+  const herbMat = lambert(0x4a8a3a), flowerMat = lambert(0x8adcff);
+  const oreMat = lambert(0x6a6e78), crystalMat = new THREE.MeshBasicMaterial({ color: 0x7fd0ff });
+  const makeHerb = () => {
+    const g = new THREE.Group();
+    for (let i = 0; i < 5; i++) {
+      const blade = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.6, 4), herbMat);
+      const a = (i / 5) * Math.PI * 2;
+      blade.position.set(Math.cos(a) * 0.12, 0.3, Math.sin(a) * 0.12);
+      blade.rotation.z = (Math.random() - 0.5) * 0.4;
+      g.add(blade);
+    }
+    const bud = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 5), flowerMat);
+    bud.position.y = 0.55;
+    g.add(bud);
+    return g;
+  };
+  const makeOre = () => {
+    const g = new THREE.Group();
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.6, 0), oreMat);
+    rock.position.y = 0.3;
+    g.add(rock);
+    for (let i = 0; i < 3; i++) {
+      const cr = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.3, 4), crystalMat);
+      cr.position.set((Math.random() - 0.5) * 0.5, 0.5 + Math.random() * 0.2, (Math.random() - 0.5) * 0.5);
+      cr.rotation.z = (Math.random() - 0.5);
+      g.add(cr);
+    }
+    return g;
+  };
+  const spots = [];
+  // ervas em campos e perto d'água; minério em regiões rochosas / caverna
+  for (let i = 0; i < 22; i++) spots.push(['herb', i]);
+  for (let i = 0; i < 14; i++) spots.push(['ore', i + 100]);
+  for (const [kind, seed] of spots) {
+    const a = rnd(seed, 1) * Math.PI * 2;
+    const r = 20 + rnd(seed, 2) * (kind === 'ore' ? 280 : 200);
+    let x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const y = terrainHeight(x, z);
+    if (y < -1 || distToPath(x, z) < 3) continue;
+    let inWater = false;
+    for (const w of WATERS) if (Math.hypot(x - w.x, z - w.z) < w.r + w.shore) inWater = true;
+    if (inWater) continue;
+    const model = kind === 'herb' ? makeHerb() : makeOre();
+    model.position.set(x, y, z);
+    model.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    scene.add(model);
+    gatherables.push({ kind, x, z, model, cooldown: 0 });
+  }
+  // alguns nós de minério garantidos na caverna
+  for (let i = 0; i < 3; i++) {
+    const gx = CAVE.x - 8 + i * 8, gz = CAVE.z + 6;
+    const model = makeOre();
+    model.position.set(gx, terrainHeight(gx, gz), gz);
+    model.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    scene.add(model);
+    gatherables.push({ kind: 'ore', x: gx, z: gz, model, cooldown: 0 });
   }
 }
 

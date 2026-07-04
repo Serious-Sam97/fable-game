@@ -139,7 +139,10 @@ dungeon de formas completamente diferentes.
 - [ ] Fauna ambiente: cervos (caçáveis), pássaros, peixes pulando
 - [x] **Pesca** ✅ (minigame de timing perto d'água, 5 tipos de peixe + bota velha,
       treina Habilidade, vendável ao Barnum/Sal); mineração/herbalismo/lenhador pendentes
-- [ ] **Crafting**: forja (armas/armaduras), alquimia (poções), cozinha (buffs)
+- [x] **Crafting** ✅: coleta de ervas 🌿 e minério ⛏️ (nós espalhados que renascem;
+      minerar treina Força), Forja (melhora a raridade da arma equipada com minério +
+      ouro, comum→lendário), Caldeirão de alquimia (poções de vida/vontade com ervas);
+      cozinha/buffs e forja de armaduras pendentes
 - [ ] **Economia viva**: preços variam por estoque e região; rotas de comércio entre cidades
 - [x] **Casa comprável** ✅ (cabana em Pedravento, 500🪙): aluguel passivo de 25🪙/dia
       coletável na porta + descanso até o amanhecer (cura total) — Fable puro;
