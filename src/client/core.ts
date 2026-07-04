@@ -3,6 +3,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // ============================================================ cel-shading (look Fable)
@@ -43,32 +45,116 @@ export const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 
 
 export const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
+
+// oclusão ambiente (Fase 32): GTAO — sombra de contato nos cantos/junções, "assenta" os
+// objetos no mundo. Vem logo após o render (escurece a beauty antes do bloom/grade).
+export const gtao = new GTAOPass(scene, camera, innerWidth, innerHeight);
+gtao.output = GTAOPass.OUTPUT.Default;
+gtao.blendIntensity = 1.0;
+gtao.updateGtaoMaterial({
+  radius: 2.0,           // alcance em unidades de mundo — pega a base de props/casas/árvores
+  distanceExponent: 1.0,
+  thickness: 1.0,
+  scale: 1.5,            // intensidade do escurecimento nos cantos/junções
+  samples: 16,
+  distanceFallOff: 1.0,
+  screenSpaceRadius: false,
+});
+composer.addPass(gtao);
+
 export const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.4, 0.7, 0.85);
 composer.addPass(bloom);
 
-// color grade estilo Fable: leve calor dourado, contraste/saturação suaves e vinheta
+// god rays / shafts de luz (Fase 34): radial blur da beauty em direção ao sol na tela,
+// acumulando só o brilho alto (céu/sol) → onde árvores/prédios ocluem, nascem os raios.
+// uSun/uIntensity são atualizados por frame em game.ts (some fora da tela/abaixo do horizonte).
+export const godrayUniforms = {
+  tDiffuse: { value: null },
+  uSun: { value: new THREE.Vector2(0.5, 0.5) }, // posição do sol em uv de tela
+  uIntensity: { value: 0.0 },
+  uColor: { value: new THREE.Color(0xffe6b0) },  // dourado quente
+  uDensity: { value: 0.9 },
+  uWeight: { value: 0.42 },
+  uDecay: { value: 0.97 },
+  uThreshold: { value: 0.45 },                   // só brilho acima disto vira raio
+};
+const GodRaysShader = {
+  uniforms: godrayUniforms,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tDiffuse;
+    uniform vec2 uSun; uniform float uIntensity, uDensity, uWeight, uDecay, uThreshold; uniform vec3 uColor;
+    const int SAMPLES = 48;
+    const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+    void main(){
+      vec3 base = texture2D(tDiffuse, vUv).rgb;
+      if (uIntensity <= 0.001) { gl_FragColor = vec4(base, 1.0); return; }
+      vec2 coord = vUv;
+      vec2 delta = (vUv - uSun) * (uDensity / float(SAMPLES));
+      float illum = 1.0;
+      vec3 shaft = vec3(0.0);
+      for (int i = 0; i < SAMPLES; i++) {
+        coord -= delta;                              // caminha em direção ao sol
+        vec3 s = texture2D(tDiffuse, coord).rgb;
+        float l = max(0.0, dot(s, LUMA) - uThreshold); // só o brilho alto contribui
+        shaft += s * l * illum * uWeight;
+        illum *= uDecay;
+      }
+      gl_FragColor = vec4(base + shaft * uIntensity * uColor, 1.0);
+    }`,
+};
+export const godrays = new ShaderPass(GodRaysShader);
+composer.addPass(godrays);
+
+// color grade estilo Fable (Fase 30): o dourado como fio condutor que unifica o jogo inteiro.
+// Duotone por luminância (sombras terrosas → luzes cremes) + de-teal (aquece props frios Kenney)
+// + calor/tint dourad, todos modulados por hora do dia e região (ver updateColorGrade em game.ts).
 export const gradeUniforms = {
   tDiffuse: { value: null },
-  uWarm: { value: 0.05 },       // calor sutil — o entardecer já é quente por si
+  uWarm: { value: 0.05 },       // calor aditivo — o entardecer já é quente por si
   uSat: { value: 1.1 },         // realça as cores
-  uContrast: { value: 1.05 },
-  uVignette: { value: 0.26 },
+  uContrast: { value: 1.06 },
+  uVignette: { value: 0.28 },
+  uDeteal: { value: 0.10 },     // aquece pixels frios/teal (props Kenney) → puxa pro dourado
+  uDuo: { value: 0.11 },        // força do duotone unificador (o "mesma mão que pintou")
+  uShadow: { value: new THREE.Color(0x3a2f22) }, // sombras quentes-terrosas
+  uHi: { value: new THREE.Color(0xfff1d6) },     // luzes douradas cremosas
+  uTint: { value: new THREE.Color(0xffd9a0) },   // dourado Fable — tingimento global
+  uTintAmt: { value: 0.06 },
+  uTemp: { value: 0.0 },     // temperatura por cena (Fase 35): + quente / - frio
+  uFilmic: { value: 0.16 },  // curva-S filmica sobre o ACES (resposta cinematográfica)
 };
 const GradeShader = {
   uniforms: gradeUniforms,
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
     varying vec2 vUv; uniform sampler2D tDiffuse;
-    uniform float uWarm; uniform float uSat; uniform float uContrast; uniform float uVignette;
+    uniform float uWarm, uSat, uContrast, uVignette, uDeteal, uDuo, uTintAmt, uTemp, uFilmic;
+    uniform vec3 uShadow, uHi, uTint;
+    const vec3 LUMA = vec3(0.299, 0.587, 0.114);
     void main(){
       vec3 c = texture2D(tDiffuse, vUv).rgb;
       // saturação
-      float l = dot(c, vec3(0.299, 0.587, 0.114));
-      c = mix(vec3(l), c, uSat);
+      c = mix(vec3(dot(c, LUMA)), c, uSat);
+      // temperatura por cena (balanço R/B): quente > 0, frio < 0
+      c.r *= 1.0 + uTemp * 0.5;
+      c.b *= 1.0 - uTemp * 0.5;
       // contraste em torno de 0.5
       c = (c - 0.5) * uContrast + 0.5;
-      // calor dourado (sobe vermelho/verde, baixa azul de leve)
-      c += vec3(uWarm, uWarm*0.6, -uWarm*0.5);
+      // de-teal: onde a cor é fria (verde/azul > vermelho), aquece — mata o teal dos props
+      float cool = clamp(max(c.g, c.b) - c.r, 0.0, 1.0);
+      c.r += cool * uDeteal;
+      c.b -= cool * uDeteal * 0.5;
+      // duotone unificador: puxa tudo p/ o eixo quente (sombra terrosa → luz creme) por luminância
+      float lum = clamp(dot(c, LUMA), 0.0, 1.0);
+      c = mix(c, mix(uShadow, uHi, lum), uDuo);
+      // calor dourado aditivo
+      c += vec3(uWarm, uWarm * 0.6, -uWarm * 0.5);
+      // tingimento global dourado (multiplicativo suave)
+      c = mix(c, c * uTint * 1.6, uTintAmt);
+      // curva-S filmica (resposta cinematográfica sobre o ACES) — contraste com rolloff suave
+      vec3 cc = clamp(c, 0.0, 1.0);
+      c = mix(c, cc * cc * (3.0 - 2.0 * cc), uFilmic);
       // vinheta suave
       float d = distance(vUv, vec2(0.5));
       c *= 1.0 - smoothstep(0.5, 0.95, d) * uVignette;
@@ -79,11 +165,81 @@ export const gradePass = new ShaderPass(GradeShader);
 composer.addPass(gradePass);
 composer.addPass(new OutputPass());
 
+// profundidade de campo leve (Fase 40): desfoque com foco no centro (o interlocutor), acionado
+// em diálogos/cutscenes → enquadramento cinematográfico. Early-out quando uDof≈0 (grátis no normal).
+export const dofUniforms = {
+  tDiffuse: { value: null },
+  uTexel: { value: new THREE.Vector2(1 / innerWidth, 1 / innerHeight) },
+  uDof: { value: 0.0 },
+  uFocus: { value: new THREE.Vector2(0.5, 0.52) },
+};
+const DofShader = {
+  uniforms: dofUniforms,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tDiffuse; uniform vec2 uTexel, uFocus; uniform float uDof;
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      float coc = smoothstep(0.10, 0.46, distance(vUv, uFocus)) * uDof; // nítido no foco, borra longe
+      if (coc < 0.003) { gl_FragColor = vec4(c, 1.0); return; }
+      vec2 r = uTexel * coc * 7.0;
+      vec3 s = c;
+      s += texture2D(tDiffuse, vUv + vec2(r.x, 0.0)).rgb;
+      s += texture2D(tDiffuse, vUv - vec2(r.x, 0.0)).rgb;
+      s += texture2D(tDiffuse, vUv + vec2(0.0, r.y)).rgb;
+      s += texture2D(tDiffuse, vUv - vec2(0.0, r.y)).rgb;
+      s += texture2D(tDiffuse, vUv + r * 0.7).rgb;
+      s += texture2D(tDiffuse, vUv - r * 0.7).rgb;
+      s += texture2D(tDiffuse, vUv + vec2(r.x, -r.y) * 0.7).rgb;
+      s += texture2D(tDiffuse, vUv + vec2(-r.x, r.y) * 0.7).rgb;
+      gl_FragColor = vec4(mix(c, s / 9.0, clamp(coc, 0.0, 1.0)), 1.0);
+    }`,
+};
+export const dof = new ShaderPass(DofShader);
+composer.addPass(dof);
+
+// anti-aliasing & nitidez (Fase 39): SMAA sobre a imagem final (tonemapeada) mata o serrilhado
+// das bordas low-poly/contorno, estável em movimento (sem ghosting temporal). Depois, um sharpen
+// sutil (unsharp mask) devolve a crocância que qualquer AA suaviza. Rodam por último, em sRGB.
+export const smaa = new SMAAPass(innerWidth, innerHeight);
+composer.addPass(smaa);
+const SharpenShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uTexel: { value: new THREE.Vector2(1 / innerWidth, 1 / innerHeight) },
+    uAmount: { value: 0.35 },
+    uGrain: { value: 0.035 },   // grão de filme sutil (Fase 40)
+    uTime: { value: 0 },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tDiffuse; uniform vec2 uTexel; uniform float uAmount, uGrain, uTime;
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      vec3 blur = texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb
+                + texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb
+                + texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb
+                + texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
+      blur *= 0.25;
+      c = c + (c - blur) * uAmount;                       // sharpen (unsharp mask)
+      // grão animado: ruído por pixel, mais visível nas sombras (como filme de verdade)
+      float g = fract(sin(dot(vUv + fract(uTime), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+      c += g * uGrain * (1.2 - dot(c, vec3(0.299, 0.587, 0.114)));
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`,
+};
+export const sharpen = new ShaderPass(SharpenShader);
+composer.addPass(sharpen);
+
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
+  gtao.setSize(innerWidth, innerHeight);
+  smaa.setSize(innerWidth, innerHeight);
+  sharpen.uniforms.uTexel.value.set(1 / innerWidth, 1 / innerHeight);
+  dofUniforms.uTexel.value.set(1 / innerWidth, 1 / innerHeight);
 });
 
 // ============================================================ lights
@@ -93,11 +249,15 @@ scene.add(hemi);
 
 export const sun = new THREE.DirectionalLight(0xfff2d0, 1.7);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -95; sun.shadow.camera.right = 95;
-sun.shadow.camera.top = 95; sun.shadow.camera.bottom = -95;
-sun.shadow.camera.far = 400;
-sun.shadow.bias = -0.0005;
+// sombras de qualidade (Fase 31): mapa 4096² num frustum apertado centrado no jogador
+// → texels bem menores (nítido de perto); normalBias mata o peter-panning/acne sem serrilhar.
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.left = -72; sun.shadow.camera.right = 72;
+sun.shadow.camera.top = 72; sun.shadow.camera.bottom = -72;
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 380;
+sun.shadow.bias = -0.0003;
+sun.shadow.normalBias = 0.03;
 scene.add(sun); scene.add(sun.target);
 
 export const moon = new THREE.DirectionalLight(0x7a90d8, 0);
@@ -119,11 +279,16 @@ export const SKY = {
   dayT: 0.09,            // 0 = dawn, .25 = noon, .5 = dusk, .75 = midnight
   day: 1,                // day counter
   sunAlt: 1, nightF: 0,  // updated each frame
+  golden: 0,             // 0..1 golden-hour (nascer/pôr) — alimenta o color grade
 };
 
 const cDay = new THREE.Color(0x8fc4ec), cDusk = new THREE.Color(0xe89a5a),
       cNight = new THREE.Color(0x0b1430), skyCol = new THREE.Color();
 const sunWarm = new THREE.Color(0xffc078), sunWhite = new THREE.Color(0xfff4dc);
+// paleta cinematográfica de luz ambiente (Fase 25): dia · golden hour · noite lunar
+const hemiDay = new THREE.Color(0xd6ecff), hemiGold = new THREE.Color(0xffd9a8), hemiNight = new THREE.Color(0x2b3c6e);
+const hemiGrDay = new THREE.Color(0x6e8a4a), hemiGrNight = new THREE.Color(0x1a2440);
+const goldGlow = new THREE.Color(0xff9a4a);
 
 export function updateSky(dt, playerPos, dim = 0) {
   // dim = 0..1 — tempo fechado (chuva) escurece o céu e aproxima a névoa
@@ -145,10 +310,15 @@ export function updateSky(dt, playerPos, dim = 0) {
   moon.target.position.copy(playerPos);
   moon.intensity = 0.45 * SKY.nightF;
 
-  // rim quente segue o jogador — forte de dia (glow dourado), some à noite
+  // golden hour: pico quando o sol está baixo mas acima do horizonte (nascer/pôr)
+  const golden = clamp(1 - Math.abs(sunAlt) * 3.2, 0, 1) * clamp(sunAlt * 8 + 0.2, 0, 1);
+  SKY.golden = golden; // exposto p/ o color grade (Fase 30)
+
+  // rim quente segue o jogador — realçado e mais alaranjado no golden hour
   rimLight.position.set(playerPos.x - 50, 34, playerPos.z - 60);
   rimLight.target.position.copy(playerPos);
-  rimLight.intensity = 0.55 * clamp(sunAlt * 2 + 0.2, 0, 1) * (1 - dim * 0.5);
+  rimLight.intensity = (0.55 * clamp(sunAlt * 2 + 0.2, 0, 1) + golden * 0.6) * (1 - dim * 0.5);
+  rimLight.color.copy(sunWarm).lerp(goldGlow, golden);
 
   if (sunAlt > 0) skyCol.lerpColors(cDusk, cDay, smoothstep(0, 0.42, sunAlt));
   else skyCol.lerpColors(cDusk, cNight, smoothstep(0, 0.3, -sunAlt));
@@ -159,7 +329,10 @@ export function updateSky(dt, playerPos, dim = 0) {
   scene.fog.far = lerp(280, 160, SKY.nightF) * (1 - dim * 0.4);
 
   sun.intensity *= 1 - dim * 0.55;
-  hemi.intensity = lerp(0.95, 0.22, SKY.nightF) * (1 - dim * 0.3);
+  hemi.intensity = lerp(0.95, 0.26, SKY.nightF) * (1 - dim * 0.3);
+  // luz ambiente: dourada no golden hour, azul-lunar à noite
+  hemi.color.copy(hemiDay).lerp(hemiGold, golden).lerp(hemiNight, SKY.nightF);
+  hemi.groundColor.copy(hemiGrDay).lerp(hemiGrNight, SKY.nightF);
 }
 const cStorm = new THREE.Color(0x5a6674);
 

@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 import {
-  canvas, scene, camera, composer, SKY, updateSky, skyHour,
+  canvas, scene, camera, composer, gtao, bloom, sun, hemi, godrayUniforms, smaa, sharpen, dofUniforms, SKY, updateSky, skyHour, gradeUniforms,
   beep, noiseBurst, startMusic, toggleMusic, setCombatMusic, startAmbient, setAmbient, footstep, clamp, lerp, rnd,
 } from './core';
 import {
   WORLD_R, WATERS, SEA, terrainHeight, buildWorld, updateWorld, weather,
   chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
-  gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue,
+  gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue, biomeGrade,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
@@ -18,7 +18,7 @@ import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
 import { WEAPONS, ARMORS, RARITIES, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
-import { loadGLTF, Actor } from './assets';
+import { loadGLTF, Actor, envUniform } from './assets';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
 
@@ -31,14 +31,20 @@ const SAVE_KEY = 'fable_save_v1';
 const heroModel = makeHero();
 scene.add(heroModel.group);
 
+// ============================================================ referência de escala do mundo
+// Tudo deriva daqui. O herói procedural tem ~2.5 unidades (topo da cabeça em y≈2.5);
+// os GLTF são normalizados a estas alturas via Actor.height (bind pose, determinístico).
+const HERO_H = 2.5;   // altura do herói
+const DOG_H = 0.95;   // altura do cão (na cernelha/cabeça)
+
 // ============================================================ modelo animado do herói (GLTF)
 let heroActor = null;
 const heroAnim = { lastSwing: 0, lastRoll: 0, wasDead: false };
 (async () => {
   try {
     const gltf = await loadGLTF('/models/characters/Knight_Male.gltf');
-    const scale = 2.5 / Actor.height(gltf); // herói ~2.5 unidades de altura
-    heroActor = new Actor(gltf, { scale, faceOffset: Math.PI });
+    const scale = HERO_H / Actor.height(gltf); // herói ~HERO_H unidades de altura
+    heroActor = new Actor(gltf, { scale });
     // esconde o corpo procedural, mantendo halo/chifres (controlados pela moralidade)
     const keep = new Set();
     if (heroModel.halo) keep.add(heroModel.halo);
@@ -76,8 +82,8 @@ let dogActor = null;
 (async () => {
   try {
     const gltf = await loadGLTF('/models/animals/Husky.gltf');
-    const scale = 0.95 / Actor.height(gltf);
-    dogActor = new Actor(gltf, { scale, faceOffset: Math.PI });
+    const scale = DOG_H / Actor.height(gltf);
+    dogActor = new Actor(gltf, { scale });
     dogModel.group.visible = false;
     scene.add(dogActor.wrapper);
     dogActor.setBase(['Idle']);
@@ -285,21 +291,39 @@ function movePlayerTo(nx, nz) {
 }
 
 // Fable: o corpo conta a história — Força incha os ombros, Vontade acende tatuagens
+// arma encaixada no osso da mão direita do GLTF (three.js: Fist.R → FistR).
+// O +Y local do osso aponta para BAIXO no mundo (medido na bancada), então giramos π em X
+// para a lâmina subir. Contra-escala (1/escala do modelo) mantém o tamanho de design
+// independente de quão pequeno o modelo foi normalizado.
+// prende uma arma ao osso FistR de qualquer ator GLTF (herói local e remotos)
+function attachWeaponToActor(actor, wpnKey, isBow) {
+  const bone = actor.bone('FistR');
+  if (!bone) return;
+  for (const c of [...bone.children]) if (c.userData.isWeapon) bone.remove(c);
+  const w = makeWeaponModel(wpnKey);
+  w.userData.isWeapon = true;
+  const inv = 1 / (actor.root.scale.x || 1); // desfaz a escala herdada do osso
+  w.scale.setScalar(inv * 0.9);
+  if (isBow) {
+    w.rotation.set(Math.PI * 0.5, Math.PI / 2, 0); // arco na vertical, face p/ frente
+    w.position.set(0, 0.06 * inv, 0.10 * inv);
+  } else {
+    // lâmina p/ cima com leve inclinação (empunhadura de prontidão) — calibrado na bancada
+    w.rotation.set(0.32, 0, 0.06);
+    w.position.set(0, 0.06 * inv, 0.04 * inv);
+  }
+  bone.add(w);
+}
+
+function attachHeroWeapon() {
+  attachWeaponToActor(heroActor, player.equipped.wpn, equippedStats().kind === 'bow');
+}
+
 function updateHeroBody() {
   const eq = equippedStats();
   $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
   if (heroActor) {
-    // arma encaixada no osso da mão direita (o three.js remove o ponto: Fist.R → FistR)
-    const bone = heroActor.bone('FistR');
-    if (bone) {
-      for (const c of [...bone.children]) if (c.userData.isWeapon) bone.remove(c);
-      const w = makeWeaponModel(player.equipped.wpn);
-      w.userData.isWeapon = true;
-      w.scale.setScalar(0.6);
-      w.position.set(0, 0.15, 0.02);
-      w.rotation.set(Math.PI / 2, 0, 0); // blade apontando para frente da mão
-      bone.add(w);
-    }
+    attachHeroWeapon();
     return;
   }
   const str = player.disc.str.lvl, wil = player.disc.wil.lvl;
@@ -355,8 +379,8 @@ function addNpc(name, model, x, z, opts = {}) {
   // modelo GLTF animado (o actor.wrapper vira filho do group → herda pos/rotação/visibilidade)
   if (opts.gltf) {
     loadGLTF(opts.gltf).then((gltf) => {
-      const scale = 2.5 / Actor.height(gltf);
-      npc.actor = new Actor(gltf, { scale, faceOffset: Math.PI });
+      const scale = HERO_H / Actor.height(gltf);
+      npc.actor = new Actor(gltf, { scale });
       model.group.traverse((o) => { if (o.isMesh) o.visible = false; }); // esconde o corpo procedural
       model.group.add(npc.actor.wrapper);
       npc.actor.setBase(['Idle']);
@@ -426,19 +450,82 @@ const FACE_X = new Set(FACE_X_TYPES);
 // mapa de inimigos → modelo GLTF animado (os sem entrada seguem procedurais: besouros, caranguejo)
 const ENEMY_GLTF = {
   lobo:        { url: '/models/animals/Wolf.gltf', h: 2.0, walk: ['Gallop', 'Walk'], attack: ['Attack'] },
-  lobo_alfa:   { url: '/models/animals/Wolf.gltf', h: 2.9, walk: ['Gallop', 'Walk'], attack: ['Attack'] },
+  lobo_alfa:   { url: '/models/animals/Wolf.gltf', h: 2.9, walk: ['Gallop', 'Walk'], attack: ['Attack'], tint: 0x6f6a63 }, // grisalho e maior
   hobbe:       { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch', 'SwordSlash'] },
-  xama:        { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch'] },
-  hobbe_chefe: { url: '/models/characters/Goblin_Male.gltf', h: 2.7, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
+  xama:        { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch'], tint: 0x6a4a86 }, // arcano roxo
+  hobbe_chefe: { url: '/models/characters/Goblin_Male.gltf', h: 2.7, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'], tint: 0x8a5a2a }, // capitão bronzeado
   bandido:     { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
-  arqueiro:    { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['Shoot_OneHanded', 'SwordSlash'] },
-  chefe:       { url: '/models/characters/Ninja_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash'] },
+  arqueiro:    { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['Shoot_OneHanded', 'SwordSlash'], tint: 0x3a5a4a }, // couro esverdeado
+  chefe:       { url: '/models/characters/Ninja_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash'], tint: 0x6a2a2a }, // chefe carmesim
   guarda:      { url: '/models/characters/Soldier_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
   cavaleiro_sombrio: { url: '/models/characters/Knight_Male.gltf', h: 3.0, walk: ['Run', 'Walk'], attack: ['SwordSlash'], tint: 0x565663 },
   malachi:     { url: '/models/characters/Knight_Golden_Male.gltf', h: 3.4, walk: ['Run', 'Walk'], attack: ['SwordSlash'] },
   balverine:   { url: '/models/monsters/Big/glTF/Demon.gltf', h: 4.2, walk: ['Run', 'Walk'], attack: ['Punch'] },
   troll:       { url: '/models/monsters/Big/glTF/Yeti.gltf', h: 5.0, walk: ['Walk', 'Run'], attack: ['Punch'] },
 };
+
+// preload dos GLTF comuns (herói, cão e todos os inimigos) para evitar pop-in: quando o
+// inimigo aparece, o loadGLTF do ensureEnemyView já pega a promessa cacheada e instancia na hora.
+function preloadModels() {
+  const urls = new Set(['/models/characters/Knight_Male.gltf', '/models/animals/Husky.gltf']);
+  for (const k in ENEMY_GLTF) urls.add(ENEMY_GLTF[k].url);
+  for (const url of urls) loadGLTF(url).catch(() => {});
+}
+preloadModels();
+
+// ============================================================ fauna ambiente (Fase 27)
+// cervos/veados/raposas errantes (GLTF animados) que vagam pela grama e fogem do herói
+const FAUNA_KINDS = [
+  { url: '/models/animals/Deer.gltf', h: 1.7, walk: ['Walk', 'Gallop'] },
+  { url: '/models/animals/Stag.gltf', h: 2.0, walk: ['Walk', 'Gallop'] },
+  { url: '/models/animals/Fox.gltf',  h: 0.8, walk: ['Walk', 'Gallop'] },
+];
+const fauna = [];
+(async () => {
+  for (let i = 0; i < 9; i++) {
+    const kind = FAUNA_KINDS[i % FAUNA_KINDS.length];
+    let x = 0, z = 0, y = -9, tries = 0;
+    do { const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 150; x = Math.cos(a) * r; z = Math.sin(a) * r; y = terrainHeight(x, z); tries++; } while ((y < 0.6 || y > 8) && tries < 25);
+    try {
+      const gltf = await loadGLTF(kind.url);
+      const actor = new Actor(gltf, { scale: kind.h / Actor.height(gltf) });
+      scene.add(actor.wrapper);
+      actor.setBase(['Idle']);
+      fauna.push({ actor, pos: new THREE.Vector3(x, y, z), ry: Math.random() * 6.28, walk: kind.walk, target: null, t: Math.random() * 4, moving: false });
+    } catch (e) { /* modelo ausente → sem fauna */ }
+  }
+})();
+
+function updateFauna(dt) {
+  for (const f of fauna) {
+    const dpx = f.pos.x - player.pos.x, dpz = f.pos.z - player.pos.z, dp = Math.hypot(dpx, dpz);
+    let mx = 0, mz = 0, speed = 2.2;
+    if (dp < 14 && dp > 0.01) {          // foge do herói
+      mx = dpx / dp; mz = dpz / dp; speed = 6.8; f.t = 0.7;
+    } else {
+      f.t -= dt;
+      if (f.t <= 0) {                     // novo alvo, ou pastar parado
+        if (Math.random() < 0.4) { f.target = null; f.t = 2 + Math.random() * 4; }
+        else { const a = Math.random() * 6.28, r = 6 + Math.random() * 16; f.target = { x: f.pos.x + Math.cos(a) * r, z: f.pos.z + Math.sin(a) * r }; f.t = 3 + Math.random() * 4; }
+      }
+      if (f.target) {
+        const tx = f.target.x - f.pos.x, tz = f.target.z - f.pos.z, td = Math.hypot(tx, tz);
+        if (td > 1) { mx = tx / td; mz = tz / td; } else f.target = null;
+      }
+    }
+    const ml = Math.hypot(mx, mz);
+    f.moving = ml > 0.01;
+    if (f.moving) {
+      const nx = f.pos.x + mx * speed * dt, nz = f.pos.z + mz * speed * dt, ny = terrainHeight(nx, nz);
+      if (ny > 0.3) { f.pos.set(nx, ny, nz); f.ry = Math.atan2(mx, mz); } else f.target = null; // evita entrar na água
+    }
+    f.actor.wrapper.position.copy(f.pos);
+    f.actor.wrapper.rotation.set(0, f.ry, 0);
+    f.actor.setBase(f.moving ? f.walk : ['Idle']);
+    f.actor.update(dt);
+  }
+}
+
 function loadEnemyActor(v) {
   const cfg = ENEMY_GLTF[v.type];
   if (!cfg || v.actorTried) return;
@@ -446,7 +533,7 @@ function loadEnemyActor(v) {
   v.cfg = cfg;
   loadGLTF(cfg.url).then((gltf) => {
     const scale = cfg.h / Actor.height(gltf);
-    const actor = new Actor(gltf, { scale, faceOffset: Math.PI });
+    const actor = new Actor(gltf, { scale });
     if (cfg.tint) actor.root.traverse((o) => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.color.multiplyScalar(0.6).lerp(new THREE.Color(cfg.tint), 0.5)); });
     v.actor = actor;
     v.model.group.visible = false;
@@ -1879,10 +1966,12 @@ function caveTeleport(x, z, title, sub) {
   centerMsg(title, sub);
 }
 function enterCave() {
+  inCave = true; // grade de masmorra (Fase 35): frio, contrastado, opressivo
   caveTeleport(CAVE.x + 16, CAVE.z + 16, 'Caverna dos Hobbes', 'A escuridão cheira a mofo e fumaça de tocha…');
   beep(90, 0.6, 'sawtooth', 0.06, -30);
 }
 function exitCave() {
+  inCave = false;
   caveTeleport(CAVE.entX, CAVE.entZ + 4, 'Colinas de Pedravento', 'A luz do dia recebe você de volta');
   beep(500, 0.4, 'sine', 0.05, 200);
 }
@@ -2009,6 +2098,97 @@ function openChest(ch) {
   ringEffect(ch.pos, 0xffd24a, 3);
   beep(1050, 0.12, 'sine', 0.05); setTimeout(() => beep(1350, 0.18, 'sine', 0.05), 120);
 }
+
+// ============================================================ color grade (Fase 30)
+// harmoniza a paleta do jogo inteiro: modula o grade global por hora do dia + região,
+// com transição suave (sem flicker ao cruzar biomas). O dourado Fable é o fio condutor.
+// estado de cena p/ o color grade cinematográfico (Fase 35) + DOF/grão (Fase 40)
+let inCave = false, combatThreat = false, _sCombat = 0, _sCave = 0, _dbgCombat = false, _sDof = 0, _grainT = 0;
+const _dofV = new THREE.Vector3();
+const _gTint = new THREE.Color(), _shT = new THREE.Color(), _hiT = new THREE.Color();
+// rampa do duotone: quente-terrosa de dia, fria-lunar à noite (respeita o mood da hora)
+const _shDay = new THREE.Color(0x3a2f22), _shNight = new THREE.Color(0x1e2a48);
+const _hiDay = new THREE.Color(0xfff1d6), _hiNight = new THREE.Color(0xb6c6e8);
+const _caveAmb = new THREE.Color(0x3a2a18); // ambiente quente-escuro da caverna (Fase 36)
+function updateColorGrade(dt, pos) {
+  const g = biomeGrade(pos.x, pos.z);
+  const golden = SKY.golden, night = SKY.nightF;
+  const U = gradeUniforms;
+  const k = 1 - Math.pow(0.0015, dt); // suavização exponencial (~0.25s p/ assentar)
+
+  // grade por CENA (Fase 35): combate e masmorra sobrepõem um look dramático
+  _sCombat = lerp(_sCombat, combatThreat ? 1 : 0, k);
+  _sCave = lerp(_sCave, inCave ? 1 : 0, k);
+  _sDof = lerp(_sDof, dialog.style.display === 'block' ? 1 : 0, k * 1.4); // DOF em diálogo (Fase 40)
+
+  // iluminação de interiores (Fase 36): dentro da caverna o céu quase apaga e o ambiente
+  // esquenta/escurece → as tochas viram a luz principal (penumbra quente, opressiva).
+  // updateSky reescreve sun/hemi a cada frame, então este atenuar aplica sobre o valor fresco.
+  sun.intensity *= 1 - _sCave * 0.94;
+  hemi.intensity *= 1 - _sCave * 0.72; // ambiente cai bem → tochas viram a luz principal
+  hemi.color.lerp(_caveAmb, _sCave * 0.85);
+  hemi.groundColor.lerp(_caveAmb, _sCave * 0.75);
+
+  // env-sheen do metal (Fase 38): reflete a cor do céu (azul de dia, laranja no dusk, escuro à
+  // noite); na caverna vira o âmbar quente das tochas. Uma cor compartilhada por todos os materiais.
+  if (scene.background && scene.background.isColor) {
+    envUniform.value.copy(scene.background).lerp(_caveAmb, _sCave * 0.8);
+  }
+
+  // alvo base por tempo do dia + desvio da região + cena
+  const warm    = 0.05 + golden * 0.06 - night * 0.03 + g.warm - _sCombat * 0.03;
+  const sat     = 1.12 - night * 0.24 + g.sat - _sCombat * 0.14 - _sCave * 0.20;
+  const duo     = 0.11 + golden * 0.05 + night * 0.03 + g.duo;
+  const tintAmt = (0.06 + golden * 0.05) * (1 - night * 0.7) * (1 - _sCombat * 0.6 - _sCave * 0.8) + g.tintAmt;
+  const vig     = 0.28 + night * 0.10 + _sCombat * 0.10 + _sCave * 0.16 + _sDof * 0.13; // + fecha em diálogo
+  const contrast = 1.06 + _sCombat * 0.10 + _sCave * 0.12;               // mais punch no combate/masmorra
+  const temp     = -_sCombat * 0.06 - _sCave * 0.12;                     // esfria (frio = perigo)
+  const filmic   = 0.16 + _sCombat * 0.10 + _sCave * 0.10;               // curva-S mais forte na tensão
+  U.uWarm.value    = lerp(U.uWarm.value, warm, k);
+  U.uSat.value     = lerp(U.uSat.value, sat, k);
+  U.uDuo.value     = lerp(U.uDuo.value, duo, k);
+  U.uTintAmt.value = lerp(U.uTintAmt.value, tintAmt, k);
+  U.uVignette.value = lerp(U.uVignette.value, vig, k);
+  U.uContrast.value = lerp(U.uContrast.value, contrast, k);
+  U.uTemp.value = lerp(U.uTemp.value, temp, k);
+  U.uFilmic.value = lerp(U.uFilmic.value, filmic, k);
+  U.uTint.value.lerp(_gTint.setRGB(g.tintR, g.tintG, g.tintB), k);
+  U.uShadow.value.lerp(_shT.copy(_shDay).lerp(_shNight, night), k); // sombras frias à noite
+  U.uHi.value.lerp(_hiT.copy(_hiDay).lerp(_hiNight, night), k);
+
+  // bloom controlado (Fase 33): apertado de dia (limiar alto → só emissivos brilham, não estoura);
+  // à noite o limiar cai e a força sobe → tochas, janelas, portais e runas ganham brilho quente.
+  const dark = Math.max(night, _sCave); // caverna conta como "escuro" → tochas brilham lá dentro
+  bloom.threshold = lerp(0.88 - golden * 0.14, 0.46, dark);
+  bloom.strength = lerp(0.34 + golden * 0.20, 0.85, dark);
+  bloom.radius = lerp(0.60, 0.80, dark);
+
+  // god rays (Fase 34): projeta o sol na tela; só emite raios quando ele está à frente,
+  // na tela e acima do horizonte — reforçado no golden hour, some à noite.
+  _sunNDC.copy(sun.position).project(camera);
+  const sx = _sunNDC.x * 0.5 + 0.5, sy = _sunNDC.y * 0.5 + 0.5;
+  const inFront = _sunNDC.z < 1; // ponto à frente da câmera (dentro do far)
+  const onScreen = inFront && sx > -0.25 && sx < 1.25 && sy > -0.25 && sy < 1.25;
+  let gr = 0;
+  if (onScreen && SKY.sunAlt > 0.02) {
+    const edge = clamp(1 - Math.max(Math.abs(sx - 0.5), Math.abs(sy - 0.5)) * 1.3, 0, 1); // some nas bordas
+    gr = clamp(SKY.sunAlt * 2.2, 0, 1) * (0.35 + golden * 1.1) * edge;
+  }
+  godrayUniforms.uSun.value.set(sx, sy);
+  godrayUniforms.uIntensity.value = lerp(godrayUniforms.uIntensity.value, gr, k * 0.6);
+
+  // grão de filme animado (Fase 40): tempo que avança alimenta o ruído no sharpen
+  _grainT += dt;
+  sharpen.uniforms.uTime.value = _grainT % 1000;
+
+  // profundidade de campo em diálogo (Fase 40): fundo desfoca, foco no interlocutor (herói)
+  dofUniforms.uDof.value = _sDof;
+  if (_sDof > 0.01) {
+    _dofV.copy(pos); _dofV.y += 1.3; _dofV.project(camera); // foca na cabeça do herói
+    if (_dofV.z < 1) dofUniforms.uFocus.value.set(clamp(_dofV.x * 0.5 + 0.5, 0.2, 0.8), clamp(_dofV.y * 0.5 + 0.5, 0.2, 0.8));
+  }
+}
+const _sunNDC = new THREE.Vector3();
 
 // ============================================================ input
 const keys = {};
@@ -2601,8 +2781,20 @@ function ensureRemoteHero(id) {
   plate.className = 'plate';
   plate.innerHTML = `<div class="pname" style="color:#7fd0ff"></div>`;
   $('plates').appendChild(plate);
-  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null };
+  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null, actor: null };
   remoteHeroes.set(id, r);
+  // modelo GLTF animado — o mesmo Knight do herói local (cacheado, então é barato)
+  loadGLTF('/models/characters/Knight_Male.gltf').then((gltf) => {
+    const scale = HERO_H / Actor.height(gltf);
+    r.actor = new Actor(gltf, { scale });
+    const keep = new Set();               // mantém halo/chifres da moralidade
+    if (r.model.halo) keep.add(r.model.halo);
+    if (r.model.horns) r.model.horns.traverse((o) => keep.add(o));
+    r.model.group.traverse((o) => { if (o.isMesh && !keep.has(o)) o.visible = false; });
+    r.model.group.add(r.actor.wrapper);
+    r.actor.setBase(['Idle']);
+    r.wpnKey = null;                       // força re-encaixe da arma no osso
+  }).catch(() => { /* mantém procedural */ });
   return r;
 }
 
@@ -2623,28 +2815,36 @@ function updateRemoteHeroes(dt) {
     r.model.group.rotation.y = r.ry;
     r.model.halo.visible = !!s.halo;
     r.model.horns.visible = !!s.horns;
-    // arma e físico dos outros heróis também aparecem
+    // arma dos outros heróis (no osso se GLTF, senão no mount procedural)
     if (r.wpnKey !== s.wpn) {
       r.wpnKey = s.wpn;
-      mountWeapon(r.model, s.wpn);
+      if (r.actor) attachWeaponToActor(r.actor, s.wpn, WEAPONS[s.wpn]?.kind === 'bow');
+      else mountWeapon(r.model, s.wpn);
     }
-    const armorSig = `${s.aHead}|${s.aChest}|${s.aLegs}|${s.aBoots}`;
-    if (r.armorSig !== armorSig) {
-      r.armorSig = armorSig;
-      applyArmorTo(r.model, { head: s.aHead || undefined, chest: s.aChest || undefined, legs: s.aLegs || undefined, boots: s.aBoots || undefined });
+    if (r.actor) {
+      // modelo GLTF animado (idle/walk/run) — igual ao herói local
+      r.actor.setBase(s.moving ? ['Run', 'Walk'] : ['Idle']);
+      r.actor.update(dt);
+    } else {
+      // fallback procedural: armadura, físico das disciplinas e passada
+      const armorSig = `${s.aHead}|${s.aChest}|${s.aLegs}|${s.aBoots}`;
+      if (r.armorSig !== armorSig) {
+        r.armorSig = armorSig;
+        applyArmorTo(r.model, { head: s.aHead || undefined, chest: s.aChest || undefined, legs: s.aLegs || undefined, boots: s.aBoots || undefined });
+      }
+      const bulk = 1 + Math.min(s.str ?? 0, 12) * 0.045;
+      r.model.shL.scale.setScalar(bulk);
+      r.model.shR.scale.setScalar(bulk);
+      const glow = (s.wil ?? 0) >= 2;
+      for (const tm of r.model.tattooMeshes) tm.visible = glow;
+      r.model.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + (s.wil ?? 0) * 0.18) : 0;
+      if (s.moving) r.walkT += dt * 9; else r.walkT *= 0.8;
+      const sw = Math.sin(r.walkT) * 0.65;
+      r.model.legL.rotation.x = sw;
+      r.model.legR.rotation.x = -sw;
+      r.model.armL.rotation.x = -sw * 0.7;
+      r.model.armR.rotation.x = sw * 0.7;
     }
-    const bulk = 1 + Math.min(s.str ?? 0, 12) * 0.045;
-    r.model.shL.scale.setScalar(bulk);
-    r.model.shR.scale.setScalar(bulk);
-    const glow = (s.wil ?? 0) >= 2;
-    for (const tm of r.model.tattooMeshes) tm.visible = glow;
-    r.model.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + (s.wil ?? 0) * 0.18) : 0;
-    if (s.moving) r.walkT += dt * 9; else r.walkT *= 0.8;
-    const sw = Math.sin(r.walkT) * 0.65;
-    r.model.legL.rotation.x = sw;
-    r.model.legR.rotation.x = -sw;
-    r.model.armL.rotation.x = -sw * 0.7;
-    r.model.armR.rotation.x = sw * 0.7;
     r.nameEl.textContent = `${s.name} [${s.lvl}]`;
   }
   // remove quem saiu
@@ -2803,6 +3003,7 @@ function tick() {
   // ---------- world / entities ----------
   if (net.connected && net.serverDayT !== null) SKY.dayT = net.serverDayT; // hora do mundo é do servidor
   updateSky(started ? dt : dt * 0.3, player.pos, weather.rainF);
+  updateColorGrade(dt, player.pos);
   updateWorld(time, dt, player.pos);
   // ambiente sonoro: pássaros/grilos pela hora, ondas perto do mar
   {
@@ -2829,6 +3030,7 @@ function tick() {
       }
     }
     updateDog(dt);
+    updateFauna(dt);
     updateFishing(dt);
     // música adaptativa: combate quando algum inimigo está caçando você por perto
     let threat = false;
@@ -2836,6 +3038,7 @@ function tick() {
       if ((e.state === 'chase' || e.state === 'attack' || e.state === 'leap') && e.pos.distanceTo(player.pos) < 24) { threat = true; break; }
     }
     setCombatMusic(threat ? 1 : 0);
+    combatThreat = threat || _dbgCombat; // grade de combate (Fase 35) — lido no updateColorGrade do próximo frame
     if (forSaleSign) forSaleSign.visible = !player.ownedHouse;
     for (const node of gatherables) {
       if (node.cooldown > 0) {
@@ -3005,7 +3208,7 @@ addEventListener('beforeunload', saveGame);
 
 // debug / experimental hooks
 window.FABLE = {
-  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
+  player, quests, enemies, npcs, chickens, fauna, SKY, net, remoteHeroes, localSim, combatLocal,
   gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate,
   gatherables, FORGE, CAULDRON, dog, digSpots,
   get heroActor() { return heroActor; }, heroModel,
@@ -3013,7 +3216,8 @@ window.FABLE = {
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },
   save: saveGame, load: loadGame,
-  startGame,
+  startGame, gtao, godrayUniforms, smaa, sharpen,
+  setScene: (s) => { inCave = s === 'cave'; _dbgCombat = s === 'combat'; }, // debug do grade por cena (Fase 35)
 };
 
 updateHeroBody(); // arma inicial na mão + visual das disciplinas
