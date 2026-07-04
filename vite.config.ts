@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // garante uma única instância do three (o app e os three/addons compartilham a mesma)
+  resolve: { dedupe: ['three'] },
+  optimizeDeps: { include: ['three'] },
   server: {
     allowedHosts: ['fable.serious-sam.dev'],
     host: true, // aceita conexões de fora do container

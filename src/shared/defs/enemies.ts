@@ -22,6 +22,7 @@ export interface EnemyDef {
   bomber?: boolean;  // explode ao alcançar o herói (ou ao morrer)
   alpha?: boolean;   // uivo de aggro alerta a matilha num raio maior
   slam?: boolean;    // pancada de área periódica (troll)
+  guard?: boolean;   // guarda da vila — só persegue jogadores PROCURADOS
 }
 
 export const ENEMY_DEFS: Record<string, EnemyDef> = {
@@ -55,9 +56,17 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
     name: 'Hobbe', lvl: 3, hp: 85, dmg: [7, 11], xp: 55, gold: [4, 9],
     renown: 1, speed: 4.2, aggro: 12, atkR: 1.9, atkCd: 1.5, icon: '👺', plateH: 2.0, respawn: 22,
   },
+  hobbe_chefe: {
+    name: 'Capitão Hobbe', lvl: 5, hp: 300, dmg: [11, 17], xp: 220, gold: [30, 50],
+    renown: 4, speed: 4.6, aggro: 16, atkR: 2.2, atkCd: 1.5, icon: '👑', plateH: 2.6, respawn: 90,
+  },
   balverine: {
     name: 'Balverine Ancião', lvl: 9, hp: 620, dmg: [16, 24], xp: 420, gold: [90, 120],
     renown: 12, speed: 6.4, aggro: 26, atkR: 2.8, atkCd: 1.6, icon: '👹', plateH: 4.4, respawn: 0,
+  },
+  caranguejo: {
+    name: 'Caranguejo da Maré', lvl: 2, hp: 45, dmg: [3, 6], xp: 28, gold: [2, 5],
+    renown: 0, speed: 3.0, aggro: 8, atkR: 1.7, atkCd: 1.5, icon: '🦀', plateH: 1.1, respawn: 16,
   },
   besouro_bomba: {
     name: 'Besouro-Bomba', lvl: 3, hp: 30, dmg: [16, 24], xp: 30, gold: [0, 2],
@@ -73,6 +82,21 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
     name: 'Troll de Pedra', lvl: 8, hp: 800, dmg: [22, 32], xp: 500, gold: [80, 120],
     renown: 8, speed: 3.2, aggro: 13, atkR: 3.4, atkCd: 2.8, icon: '🗿', plateH: 5.2, respawn: 120,
     slam: true,
+  },
+  // ---- arco principal (spawnados via story, não no início) ----
+  cavaleiro_sombrio: {
+    name: 'Cavaleiro Sombrio', lvl: 7, hp: 420, dmg: [14, 20], xp: 350, gold: [40, 70],
+    renown: 6, speed: 5.0, aggro: 20, atkR: 2.5, atkCd: 1.4, icon: '🖤', plateH: 3.0, respawn: 0,
+  },
+  malachi: {
+    name: 'Lorde Malachi, o Herói Caído', lvl: 12, hp: 1200, dmg: [20, 30], xp: 1000, gold: [200, 300],
+    renown: 25, speed: 5.6, aggro: 30, atkR: 2.8, atkCd: 1.3, icon: '☠️', plateH: 3.4, respawn: 0,
+    slam: true, // golpe de energia sombria em área
+  },
+  guarda: {
+    name: 'Guarda de Pedravento', lvl: 6, hp: 220, dmg: [12, 18], xp: 0, gold: [0, 0],
+    renown: 0, speed: 5.2, aggro: 16, atkR: 2.3, atkCd: 1.3, icon: '🛡️', plateH: 2.9, respawn: 8,
+    guard: true,
   },
 };
 

@@ -119,24 +119,43 @@ dungeon de formas completamente diferentes.
 *De um mapa para uma Albion.*
 
 ### Expansão territorial
-- [ ] **Terreno em chunks com streaming** — mundo 5–10× maior sem custo de memória
-- [ ] Biomas: pântano nebuloso, montanhas nevadas, costa com praia/porto, campos dourados
-- [ ] **2ª cidade grande** (porto comercial) + aldeias menores, cada uma com identidade
-- [ ] **Dungeons com interiores**: cavernas de hobbes, cripta assombrada, forte bandido,
-      minas abandonadas — com puzzles simples, alavancas, baús trancados (chaves de prata!)
-- [ ] **Cullis Gates** — fast travel entre portais desbloqueados (lore de Fable)
+- [~] Mundo ~2× maior (raio 190→320) com costa leste e oceano; streaming em chunks
+      fica para quando o custo apertar
+- [x] Costa com praia/porto ✅ (oceano, areia, píer); outros biomas pendentes
+- [x] **2ª cidade — Porto Bruma** ✅ (docas, farol com facho giratório, barcos,
+      3 NPCs: Pescador Jonas c/ quest, Mercadora Sal c/ loja, Marujo Bento)
+- [x] **Dungeon com interior — Caverna dos Hobbes** ✅: câmara rochosa com teto
+      (penumbra + tochas), boca de caverna que teleporta pra dentro/fora, mini-boss
+      Capitão Hobbe que dropa a Chave de Prata, baú trancado com tesouro (Martelo
+      Épico + ouro + poções); faltam cripta, forte bandido, minas
+- [x] **Cullis Gates** ✅ — fast travel vila ↔ porto (F no portal, efeito + som)
 
 ### Vida
-- [ ] **NPCs com rotina**: acordam, trabalham, almoçam, vão à taverna, dormem
-      (lojas fecham à noite!)
-- [ ] **Clima**: chuva, neblina, tempestade com raios — afeta visibilidade e spawns
+- [x] **NPCs com rotina dia/noite**: de dia trabalham no posto / vagam; à noite
+      caminham até a cama e dormem (somem em casa); lojas fecham à noite ✅
+      (falta: almoço/taverna, horários mais ricos)
+- [x] **Clima**: chuva determinística (mesma para todos no co-op, derivada da hora do
+      mundo) escurece o céu e aproxima a névoa; neblina/tempestade pendentes
 - [ ] Fauna ambiente: cervos (caçáveis), pássaros, peixes pulando
-- [ ] **Profissões de coleta**: pesca (minigame de timing), mineração, herbalismo, lenhador
-- [ ] **Crafting**: forja (armas/armaduras), alquimia (poções), cozinha (buffs)
+- [x] **Cão fiel** ✅ (companheiro icônico de Fable): segue o herói, late para
+      inimigos, fareja 6 tesouros enterrados e te leva até eles (Cavar 🦴 → ouro+itens),
+      e a pelagem/comportamento mudam com a moralidade (dourado feliz ↔ escuro rosnando);
+      por enquanto é pessoal/local (outros jogadores não o veem)
+- [x] **Pesca** ✅ (minigame de timing perto d'água, 5 tipos de peixe + bota velha,
+      treina Habilidade, vendável ao Barnum/Sal); mineração/herbalismo/lenhador pendentes
+- [x] **Crafting** ✅: coleta de ervas 🌿 e minério ⛏️ (nós espalhados que renascem;
+      minerar treina Força), Forja (melhora a raridade da arma equipada com minério +
+      ouro, comum→lendário), Caldeirão de alquimia (poções de vida/vontade com ervas);
+      cozinha/buffs e forja de armaduras pendentes
 - [ ] **Economia viva**: preços variam por estoque e região; rotas de comércio entre cidades
-      (comprar barato no porto, vender caro na montanha)
-- [ ] **Casas compráveis** com decoração e baú pessoal; aluguel como renda passiva — Fable puro
-- [ ] Crimes: roubar/atacar aldeão → guardas, multa, prisão ou fama sombria
+- [x] **Casa comprável** ✅ (cabana em Pedravento, 500🪙): aluguel passivo de 25🪙/dia
+      coletável na porta + descanso até o amanhecer (cura total) — Fable puro;
+      falta: decoração e baú pessoal
+- [x] **Crimes & guardas** ✅: atacar aldeão (Golpe sem alvo) ou vandalizar perto de
+      guarda → ficha de procura (bounty) + queda de moralidade; aldeão foge gritando;
+      guardas patrulham as cidades e **só caçam jogadores procurados** (aggro seletivo —
+      correto no co-op); ficha esfria com o tempo ou paga-se multa à Guilda; badge
+      "PROCURADO ★" na HUD
 
 **Pronto quando:** dá para passar uma sessão inteira sem combate — pescando, negociando,
 decorando a casa — e ainda assim progredir.
@@ -146,14 +165,16 @@ decorando a casa — e ainda assim progredir.
 ## Fase 4 — Narrativa, Missões & Consequência
 *A alma de Fable: escolhas que deixam cicatriz no mundo.*
 
-- [ ] **Quest engine data-driven**: objetivos compostos (matar/coletar/escoltar/proteger/
-      investigar), etapas, ramificações, flags de mundo — missões viram arquivos, não código
-- [ ] **Sistema de diálogo com árvores** e checks (moralidade, renome, ouro, item na mochila)
-- [ ] **Arco principal** em 3 atos com vilão recorrente (um Herói corrompido estilo
-      Jack of Blades) — 10–15 missões com cutscenes de câmera scriptada
-- [ ] **Consequências visíveis**: salvar ou extorquir a vila muda o mundo — vila próspera
-      (feira nova, NPCs felizes) vs. oprimida (casas fechadas, mendigos); estado por jogador*
-      (*decisões de mundo em MP: votação do grupo ou estado por instância de missão)
+- [ ] **Quest engine data-driven**: objetivos compostos, etapas, ramificações — hoje as
+      quests são máquinas de estado em código; extrair para arquivos fica para depois
+- [ ] **Sistema de diálogo com árvores** e checks (moralidade, renome, ouro, item)
+- [~] **Arco principal — "A Sombra sobre Albion"** ✅ (3 atos): vilão Lorde Malachi
+      (Herói caído com máscara dourada estilo Jack of Blades), Cavaleiro Sombrio (tenente),
+      Pedras do Ritual (cenário do clímax com menires e selo); desbloqueia após o Balverine.
+      Falta expandir para 10-15 missões e cutscenes de câmera
+- [x] **Consequência visível + escolha moral no clímax**: redimir Malachi (😇 +30 bondade,
+      Espada Lendária, estátua com halo na praça) vs. executá-lo (😈 -30, Martelo Lendário,
+      estátua sombria) — o final fica gravado no mundo e no diálogo dos NPCs
 - [ ] **Side quests procedurais** no quadro de avisos: caçadas, entregas, escoltas, resgates
       — conteúdo infinito barato
 - [ ] Reputação por região (herói em Pedravento, criminoso no porto), disfarces
@@ -172,11 +193,19 @@ finais visivelmente diferentes.
 - [ ] **Modelos GLTF com esqueleto** — packs CC0 (Quaternius, Kenney) + retoques no Blender;
       animações via Mixamo (andar, correr, rolar, 3 ataques, morrer, pescar, sentar…)
 - [ ] **Animation state machine** com blending (idle↔walk↔run, upper/lower body separados)
-- [ ] Shaders: água com reflexo/fresnel, **vento na grama e árvores** (vertex shader),
-      neblina volumétrica fake nos vales, god rays no amanhecer
-- [ ] Pós-processamento: SSAO leve, color grading por bioma/hora, vinheta dinâmica
-- [ ] **Áudio real**: samples ambientes (pássaros, vento, taverna), passos por superfície,
-      **música adaptativa em camadas** (explorar → tensão → combate → vitória)
+- [x] **Vento na grama e árvores** ✅ (vertex shader via onBeforeCompile: grama inclina
+      pela altura do vértice + rajadas; árvores balançam da base) + grama muito mais densa
+      (2600 tufos, variação de cor)
+- [x] **Água com shader** ✅ (fresnel: azul profundo no centro → claro nas bordas, ondas no
+      vertex, cintilância e brilho especular do sol, escurece à noite) no lago e no oceano;
+      god rays pendentes
+- [x] **Céu com gradiente** ✅ (domo com shader zênite→horizonte + brilho do sol,
+      transiciona dia/crepúsculo/noite — pôr do sol alaranjado dramático); SSAO/color
+      grading pendentes (bloom + tone mapping ACES já existem)
+- [x] **Música adaptativa** ✅ (camada de combate: acordes tensos + tambor pulsante quando
+      um inimigo caça você por perto, volta ao alaúde tranquilo ao sair)
+- [x] **Áudio ambiente + passos** ✅ (pássaros de dia, grilos à noite, ondas na costa —
+      tudo procedural WebAudio; passos variam por superfície: grama abafada / areia / madeira do píer)
 - [ ] **UI overhaul estilo pergaminho/Fable**: mapa-múndi desenhado à mão, journal de
       missões ilustrado, tooltips ricos
 - [ ] **Suporte a gamepad** + remapeamento de teclas

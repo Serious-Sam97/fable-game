@@ -1,21 +1,24 @@
 import * as THREE from 'three';
 import {
-  canvas, scene, camera, composer, SKY, updateSky, skyHour,
-  beep, noiseBurst, startMusic, toggleMusic, clamp, lerp, rnd,
+  canvas, scene, camera, composer, gtao, bloom, sun, hemi, godrayUniforms, smaa, sharpen, dofUniforms, SKY, updateSky, skyHour, gradeUniforms,
+  beep, noiseBurst, startMusic, toggleMusic, setCombatMusic, startAmbient, setAmbient, footstep, clamp, lerp, rnd,
 } from './core';
 import {
-  WORLD_R, LAKE, terrainHeight, buildWorld, updateWorld,
-  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST,
+  WORLD_R, WATERS, SEA, terrainHeight, buildWorld, updateWorld, weather,
+  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
+  gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue, biomeGrade,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, makeWeaponModel, applyArmorTo, makeTroll,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, makeWeaponModel, applyArmorTo, makeTroll, makeCrab,
+  makeShadowKnight, makeMalachi, makeDog,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
-import { WEAPONS, ARMORS, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
+import { WEAPONS, ARMORS, RARITIES, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
+import { loadGLTF, Actor, envUniform } from './assets';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
 
@@ -27,6 +30,82 @@ const SAVE_KEY = 'fable_save_v1';
 // ============================================================ player state
 const heroModel = makeHero();
 scene.add(heroModel.group);
+
+// ============================================================ referência de escala do mundo
+// Tudo deriva daqui. O herói procedural tem ~2.5 unidades (topo da cabeça em y≈2.5);
+// os GLTF são normalizados a estas alturas via Actor.height (bind pose, determinístico).
+const HERO_H = 2.5;   // altura do herói
+const DOG_H = 0.95;   // altura do cão (na cernelha/cabeça)
+
+// ============================================================ modelo animado do herói (GLTF)
+let heroActor = null;
+const heroAnim = { lastSwing: 0, lastRoll: 0, wasDead: false };
+(async () => {
+  try {
+    const gltf = await loadGLTF('/models/characters/Knight_Male.gltf');
+    const scale = HERO_H / Actor.height(gltf); // herói ~HERO_H unidades de altura
+    heroActor = new Actor(gltf, { scale });
+    // esconde o corpo procedural, mantendo halo/chifres (controlados pela moralidade)
+    const keep = new Set();
+    if (heroModel.halo) keep.add(heroModel.halo);
+    if (heroModel.horns) heroModel.horns.traverse((o) => keep.add(o));
+    heroModel.group.traverse((o) => { if (o.isMesh && !keep.has(o)) o.visible = false; });
+    heroModel.group.add(heroActor.wrapper);
+    heroActor.setBase(['Idle']);
+    updateHeroBody();
+  } catch (e) {
+    console.warn('modelo do herói falhou — usando procedural:', e);
+  }
+})();
+
+function driveHeroActor(dt, swingRose, rollRose) {
+  if (player.dead) {
+    if (!heroAnim.wasDead) { heroActor.trigger(['Death', 'Defeat']); heroAnim.wasDead = true; }
+  } else {
+    heroAnim.wasDead = false;
+    if (swingRose) {
+      const bow = equippedStats().kind === 'bow';
+      heroActor.trigger(bow ? ['Shoot_OneHanded', 'Shoot'] : ['SwordSlash', 'Punch'], { speed: 1.5 });
+    } else if (rollRose) {
+      heroActor.trigger(['Roll'], { speed: 1.3 });
+    }
+    heroActor.setBase(player.moving ? ['Run', 'Walk'] : ['Idle']);
+  }
+  heroActor.update(dt);
+}
+
+// ============================================================ cão fiel (companheiro de Fable)
+const dogModel = makeDog();
+scene.add(dogModel.group);
+// cão animado (Husky GLTF) com fallback pro procedural
+let dogActor = null;
+(async () => {
+  try {
+    const gltf = await loadGLTF('/models/animals/Husky.gltf');
+    const scale = DOG_H / Actor.height(gltf);
+    dogActor = new Actor(gltf, { scale });
+    dogModel.group.visible = false;
+    scene.add(dogActor.wrapper);
+    dogActor.setBase(['Idle']);
+  } catch (e) { console.warn('husky falhou — cão procedural:', e); }
+})();
+const dog = {
+  pos: new THREE.Vector3(2, 0, 10),
+  vel: new THREE.Vector3(),
+  ry: 0, walkT: 0, barkT: 0, digTarget: null,
+  state: 'follow', // follow | sit | dig
+  sniffT: 6,
+};
+dog.pos.y = 0; // ajustado no primeiro update
+// tesouros enterrados que o cão fareja (posições espalhadas, cavados uma vez)
+const digSpots = [
+  { x: 20, z: 18, dug: false, loot: { gold: 40 } },
+  { x: -34, z: 30, dug: false, loot: { gold: 30, item: { wpn: 'machado', rar: 'incomum' } } },
+  { x: 48, z: -20, dug: false, loot: { gold: 60 } },
+  { x: -20, z: -30, dug: false, loot: { gold: 35, item: { arm: 'couro_capuz', rar: 'raro' } } },
+  { x: 90, z: 30, dug: false, loot: { gold: 80 } },
+  { x: 214, z: 55, dug: false, loot: { gold: 50, item: { arm: 'couro_botas', rar: 'incomum' } } },
+];
 
 const player = {
   pos: new THREE.Vector3(0, 0, 10),
@@ -50,8 +129,17 @@ const player = {
   rollT: 0, rollDirX: 0, rollDirZ: 1, invulnT: 0,
   lastDirX: 0, lastDirZ: 1,
   blocking: false, blockStartT: -99,
+  fish: 0,                                  // peixes na sacola (vendáveis)
+  ownedHouse: false, rentDay: 0,            // casa comprável (Fable) + aluguel por dia
+  silverKey: false,                         // Chave de Prata do Capitão Hobbe
+  mats: { herb: 0, ore: 0 },                // materiais de crafting
+  bounty: 0, lastCrime: -99,                // ficha criminal (procura) — guardas caçam
 };
+const isWanted = () => player.bounty > 0;
 const hasTalent = (k) => !!player.talents[k];
+
+// casa à venda em Pedravento (a cabana em 15,8) — porta virada para o sul
+const HOUSE = { x: 15, z: 8, doorX: 15, doorZ: 11.5, price: 500, rentPerDay: 25 };
 player.pos.y = terrainHeight(player.pos.x, player.pos.z);
 const xpToNext = (lvl) => 90 + lvl * 60;
 const maxHpFor = (lvl) => 110 + (lvl - 1) * 24;
@@ -67,6 +155,7 @@ function playerTitle() {
 function updateMoralityVisuals() {
   heroModel.halo.visible = player.morality >= 40;
   heroModel.horns.visible = player.morality <= -40;
+  updateDogAppearance();
 }
 
 // ============================================================ disciplinas & arma equipada
@@ -138,8 +227,105 @@ function combatStats() {
   };
 }
 
+// ============================================================ colisão & terreno andável
+const PLAYER_R = 0.45;
+let edgeMsgT = -99;
+
+function walkable(nx, nz) {
+  if (Math.hypot(nx, nz) >= WORLD_R) {
+    if (time > edgeMsgT) {
+      edgeMsgT = time + 6;
+      floatText(player.pos, '🌫️ As terras além das colinas ainda não foram mapeadas…', '#a8b8c8', 14);
+    }
+    return false;
+  }
+  // só água FUNDA bloqueia (lago e oceano) — vales secos são livres
+  for (const w of WATERS) {
+    const dW = Math.hypot(nx - w.x, nz - w.z);
+    if (dW < w.r + w.shore && terrainHeight(nx, nz) < w.waterY - 0.3) return false;
+  }
+  return true;
+}
+
+function resolveStatic(x, z, radius = PLAYER_R) {
+  for (const c of colliders) {
+    const min = c.r + radius;
+    const dx = x - c.x, dz = z - c.z;
+    if (dx > min || dx < -min || dz > min || dz < -min) continue;
+    const d = Math.hypot(dx, dz);
+    if (d < min) {
+      if (d > 0.001) { x = c.x + (dx / d) * min; z = c.z + (dz / d) * min; }
+      else x += min;
+    }
+  }
+  return [x, z];
+}
+
+function resolvePeople(x, z) {
+  for (const n of npcs) {
+    const dx = x - n.pos.x, dz = z - n.pos.z;
+    const d = Math.hypot(dx, dz), min = 0.95;
+    if (d < min && d > 0.001) { x = n.pos.x + (dx / d) * min; z = n.pos.z + (dz / d) * min; }
+  }
+  for (const [, r] of remoteHeroes) {
+    const p = r.model.group.position;
+    const dx = x - p.x, dz = z - p.z;
+    const d = Math.hypot(dx, dz), min = 0.9;
+    if (d < min && d > 0.001) { x = p.x + (dx / d) * min; z = p.z + (dz / d) * min; }
+  }
+  return [x, z];
+}
+
+function movePlayerTo(nx, nz) {
+  // desliza nos eixos quando a diagonal é bloqueada (água/borda do mundo)
+  if (!walkable(nx, nz)) {
+    if (walkable(nx, player.pos.z)) nz = player.pos.z;
+    else if (walkable(player.pos.x, nz)) nx = player.pos.x;
+    else return;
+  }
+  [nx, nz] = resolveStatic(nx, nz);
+  [nx, nz] = resolvePeople(nx, nz);
+  if (!walkable(nx, nz)) return; // o empurrão da colisão não pode te jogar na água
+  player.pos.x = nx;
+  player.pos.z = nz;
+}
+
 // Fable: o corpo conta a história — Força incha os ombros, Vontade acende tatuagens
+// arma encaixada no osso da mão direita do GLTF (three.js: Fist.R → FistR).
+// O +Y local do osso aponta para BAIXO no mundo (medido na bancada), então giramos π em X
+// para a lâmina subir. Contra-escala (1/escala do modelo) mantém o tamanho de design
+// independente de quão pequeno o modelo foi normalizado.
+// prende uma arma ao osso FistR de qualquer ator GLTF (herói local e remotos)
+function attachWeaponToActor(actor, wpnKey, isBow) {
+  const bone = actor.bone('FistR');
+  if (!bone) return;
+  for (const c of [...bone.children]) if (c.userData.isWeapon) bone.remove(c);
+  const w = makeWeaponModel(wpnKey);
+  w.userData.isWeapon = true;
+  const inv = 1 / (actor.root.scale.x || 1); // desfaz a escala herdada do osso
+  w.scale.setScalar(inv * 0.9);
+  if (isBow) {
+    w.rotation.set(Math.PI * 0.5, Math.PI / 2, 0); // arco na vertical, face p/ frente
+    w.position.set(0, 0.06 * inv, 0.10 * inv);
+  } else {
+    // lâmina p/ cima com leve inclinação (empunhadura de prontidão) — calibrado na bancada
+    w.rotation.set(0.32, 0, 0.06);
+    w.position.set(0, 0.06 * inv, 0.04 * inv);
+  }
+  bone.add(w);
+}
+
+function attachHeroWeapon() {
+  attachWeaponToActor(heroActor, player.equipped.wpn, equippedStats().kind === 'bow');
+}
+
 function updateHeroBody() {
+  const eq = equippedStats();
+  $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
+  if (heroActor) {
+    attachHeroWeapon();
+    return;
+  }
   const str = player.disc.str.lvl, wil = player.disc.wil.lvl;
   const bulk = 1 + Math.min(str, 12) * 0.045;
   heroModel.shL.scale.setScalar(bulk);
@@ -148,14 +334,11 @@ function updateHeroBody() {
   const glow = wil >= 2;
   for (const t of heroModel.tattooMeshes) t.visible = glow;
   heroModel.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + wil * 0.18) : 0;
-  heroModel.weaponMount.clear();
-  heroModel.weaponMount.add(makeWeaponModel(player.equipped.wpn));
+  mountWeapon(heroModel, player.equipped.wpn);
   applyArmorTo(heroModel, {
     head: player.armor.head?.arm, chest: player.armor.chest?.arm,
     legs: player.armor.legs?.arm, boots: player.armor.boots?.arm,
   });
-  const eq = equippedStats();
-  $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
 }
 
 // ============================================================ quests
@@ -163,6 +346,9 @@ const quests = {
   q1: { state: 'available', count: 0, goal: 8 },                       // beetles — Guildmaster
   q2: { state: 'locked', count: 0, goal: 5, leaderResolved: false },   // bandits — Whisper
   q3: { state: 'locked', count: 0, goal: 1 },                          // balverine — Guildmaster
+  q4: { state: 'available', count: 0, goal: 8 },                       // crabs — Pescador Jonas
+  // arco principal: A Sombra sobre Albion (Lorde Malachi)
+  mq: { stage: 'locked', ending: null },
 };
 
 // ============================================================ NPCs
@@ -180,16 +366,42 @@ function addNpc(name, model, x, z, opts = {}) {
   marker.position.y = 3.1;
   marker.visible = false;
   model.group.add(marker);
-  const npc = { name, model, pos: new THREE.Vector3(x, y, z), plate, marker, role: opts.role, wander: opts.wander, home: new THREE.Vector3(x, y, z), wTarget: null, wTimer: rnd(x, z) * 5, sayT: 4 + rnd(z, x) * 8 };
+  const npc = {
+    name, model, pos: new THREE.Vector3(x, y, z), plate, marker,
+    role: opts.role, wander: opts.wander,
+    home: new THREE.Vector3(x, y, z),               // posto de trabalho (dia)
+    postRot: opts.rot ?? 0,
+    bed: opts.bed ? new THREE.Vector3(opts.bed[0], 0, opts.bed[1]) : new THREE.Vector3(x, y, z),
+    wTarget: null, wTimer: rnd(x, z) * 5, sayT: 4 + rnd(z, x) * 8, asleep: false,
+    actor: null,
+  };
   npcs.push(npc);
+  // modelo GLTF animado (o actor.wrapper vira filho do group → herda pos/rotação/visibilidade)
+  if (opts.gltf) {
+    loadGLTF(opts.gltf).then((gltf) => {
+      const scale = HERO_H / Actor.height(gltf);
+      npc.actor = new Actor(gltf, { scale });
+      model.group.traverse((o) => { if (o.isMesh) o.visible = false; }); // esconde o corpo procedural
+      model.group.add(npc.actor.wrapper);
+      npc.actor.setBase(['Idle']);
+    }).catch(() => { /* mantém procedural */ });
+  }
   return npc;
 }
 
-const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster' });
-const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper' });
-const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor' });
-addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true });
-addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true });
+// bed = casa onde o NPC dorme à noite; gltf = modelo animado (fallback procedural)
+const CH = '/models/characters/';
+const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster', bed: [-13, -3], gltf: CH + 'Wizard.gltf' });
+const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper', bed: [-9, 11], gltf: CH + 'Witch.gltf' });
+const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor', bed: [14, 7], gltf: CH + 'OldClassy_Male.gltf' });
+addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true, bed: [-9, 11], gltf: CH + 'Casual_Female.gltf' });
+addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true, bed: [13, -9], gltf: CH + 'Casual_Male.gltf' });
+// Porto Bruma
+const jonas = addNpc('Pescador Jonas', makeVillager({ robe: 0x3a5a6e, hair: 0x8a8a7a, beard: true }), PORT.x + 14, PORT.z + 1, { rot: -1.6, role: 'fisher', bed: [214, 30], gltf: CH + 'Pirate_Male.gltf' });
+addNpc('Mercadora Sal', makeVillager({ robe: 0x6e3a5a, hair: 0x2a2a2a, hat: 'hood' }), 221, 47.8, { rot: 0.6, role: 'vendor2', bed: [212, 50], gltf: CH + 'Pirate_Female.gltf' });
+addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x - 4, PORT.z + 10, { wander: true, bed: [228, 26], gltf: CH + 'Worker_Male.gltf' });
+
+const shopsOpen = () => SKY.nightF < 0.55; // lojas fecham à noite
 
 // ============================================================ chickens
 const chickens = [];
@@ -216,11 +428,16 @@ const MAKERS = {
   arqueiro: () => makeBandit({ archer: true }),
   chefe: () => makeBandit({ leader: true }),
   hobbe: () => makeHobbe(),
+  hobbe_chefe: () => makeHobbe({ captain: true }),
   xama: () => makeHobbe({ shaman: true }),
   balverine: () => makeBalverine(),
   besouro_bomba: () => makeBeetle({ bomb: true }),
   lobo_alfa: () => makeBeast({ color: 0x2e3340, scale: 1.55, tail: true }),
   troll: () => makeTroll(),
+  caranguejo: () => makeCrab(),
+  cavaleiro_sombrio: () => makeShadowKnight(),
+  malachi: () => makeMalachi(),
+  guarda: () => makeVillager({ robe: 0x3a4a6a, hair: 0x2a2a2a, guard: true }),
 };
 
 // simulação local — autoritativa apenas OFFLINE; online o servidor é a verdade
@@ -229,6 +446,101 @@ const enemyViews = new Map(); // id → view (modelo 3D + plate espelhando a sim
 const myPid = () => (net.connected ? net.id : 0);
 // beasts olham por +X na malha; a sim guarda o ângulo puro e o cliente compensa
 const FACE_X = new Set(FACE_X_TYPES);
+
+// mapa de inimigos → modelo GLTF animado (os sem entrada seguem procedurais: besouros, caranguejo)
+const ENEMY_GLTF = {
+  lobo:        { url: '/models/animals/Wolf.gltf', h: 2.0, walk: ['Gallop', 'Walk'], attack: ['Attack'] },
+  lobo_alfa:   { url: '/models/animals/Wolf.gltf', h: 2.9, walk: ['Gallop', 'Walk'], attack: ['Attack'], tint: 0x6f6a63 }, // grisalho e maior
+  hobbe:       { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch', 'SwordSlash'] },
+  xama:        { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch'], tint: 0x6a4a86 }, // arcano roxo
+  hobbe_chefe: { url: '/models/characters/Goblin_Male.gltf', h: 2.7, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'], tint: 0x8a5a2a }, // capitão bronzeado
+  bandido:     { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
+  arqueiro:    { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['Shoot_OneHanded', 'SwordSlash'], tint: 0x3a5a4a }, // couro esverdeado
+  chefe:       { url: '/models/characters/Ninja_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash'], tint: 0x6a2a2a }, // chefe carmesim
+  guarda:      { url: '/models/characters/Soldier_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
+  cavaleiro_sombrio: { url: '/models/characters/Knight_Male.gltf', h: 3.0, walk: ['Run', 'Walk'], attack: ['SwordSlash'], tint: 0x565663 },
+  malachi:     { url: '/models/characters/Knight_Golden_Male.gltf', h: 3.4, walk: ['Run', 'Walk'], attack: ['SwordSlash'] },
+  balverine:   { url: '/models/monsters/Big/glTF/Demon.gltf', h: 4.2, walk: ['Run', 'Walk'], attack: ['Punch'] },
+  troll:       { url: '/models/monsters/Big/glTF/Yeti.gltf', h: 5.0, walk: ['Walk', 'Run'], attack: ['Punch'] },
+};
+
+// preload dos GLTF comuns (herói, cão e todos os inimigos) para evitar pop-in: quando o
+// inimigo aparece, o loadGLTF do ensureEnemyView já pega a promessa cacheada e instancia na hora.
+function preloadModels() {
+  const urls = new Set(['/models/characters/Knight_Male.gltf', '/models/animals/Husky.gltf']);
+  for (const k in ENEMY_GLTF) urls.add(ENEMY_GLTF[k].url);
+  for (const url of urls) loadGLTF(url).catch(() => {});
+}
+preloadModels();
+
+// ============================================================ fauna ambiente (Fase 27)
+// cervos/veados/raposas errantes (GLTF animados) que vagam pela grama e fogem do herói
+const FAUNA_KINDS = [
+  { url: '/models/animals/Deer.gltf', h: 1.7, walk: ['Walk', 'Gallop'] },
+  { url: '/models/animals/Stag.gltf', h: 2.0, walk: ['Walk', 'Gallop'] },
+  { url: '/models/animals/Fox.gltf',  h: 0.8, walk: ['Walk', 'Gallop'] },
+];
+const fauna = [];
+(async () => {
+  for (let i = 0; i < 9; i++) {
+    const kind = FAUNA_KINDS[i % FAUNA_KINDS.length];
+    let x = 0, z = 0, y = -9, tries = 0;
+    do { const a = Math.random() * Math.PI * 2, r = 45 + Math.random() * 150; x = Math.cos(a) * r; z = Math.sin(a) * r; y = terrainHeight(x, z); tries++; } while ((y < 0.6 || y > 8) && tries < 25);
+    try {
+      const gltf = await loadGLTF(kind.url);
+      const actor = new Actor(gltf, { scale: kind.h / Actor.height(gltf) });
+      scene.add(actor.wrapper);
+      actor.setBase(['Idle']);
+      fauna.push({ actor, pos: new THREE.Vector3(x, y, z), ry: Math.random() * 6.28, walk: kind.walk, target: null, t: Math.random() * 4, moving: false });
+    } catch (e) { /* modelo ausente → sem fauna */ }
+  }
+})();
+
+function updateFauna(dt) {
+  for (const f of fauna) {
+    const dpx = f.pos.x - player.pos.x, dpz = f.pos.z - player.pos.z, dp = Math.hypot(dpx, dpz);
+    let mx = 0, mz = 0, speed = 2.2;
+    if (dp < 14 && dp > 0.01) {          // foge do herói
+      mx = dpx / dp; mz = dpz / dp; speed = 6.8; f.t = 0.7;
+    } else {
+      f.t -= dt;
+      if (f.t <= 0) {                     // novo alvo, ou pastar parado
+        if (Math.random() < 0.4) { f.target = null; f.t = 2 + Math.random() * 4; }
+        else { const a = Math.random() * 6.28, r = 6 + Math.random() * 16; f.target = { x: f.pos.x + Math.cos(a) * r, z: f.pos.z + Math.sin(a) * r }; f.t = 3 + Math.random() * 4; }
+      }
+      if (f.target) {
+        const tx = f.target.x - f.pos.x, tz = f.target.z - f.pos.z, td = Math.hypot(tx, tz);
+        if (td > 1) { mx = tx / td; mz = tz / td; } else f.target = null;
+      }
+    }
+    const ml = Math.hypot(mx, mz);
+    f.moving = ml > 0.01;
+    if (f.moving) {
+      const nx = f.pos.x + mx * speed * dt, nz = f.pos.z + mz * speed * dt, ny = terrainHeight(nx, nz);
+      if (ny > 0.3) { f.pos.set(nx, ny, nz); f.ry = Math.atan2(mx, mz); } else f.target = null; // evita entrar na água
+    }
+    f.actor.wrapper.position.copy(f.pos);
+    f.actor.wrapper.rotation.set(0, f.ry, 0);
+    f.actor.setBase(f.moving ? f.walk : ['Idle']);
+    f.actor.update(dt);
+  }
+}
+
+function loadEnemyActor(v) {
+  const cfg = ENEMY_GLTF[v.type];
+  if (!cfg || v.actorTried) return;
+  v.actorTried = true;
+  v.cfg = cfg;
+  loadGLTF(cfg.url).then((gltf) => {
+    const scale = cfg.h / Actor.height(gltf);
+    const actor = new Actor(gltf, { scale });
+    if (cfg.tint) actor.root.traverse((o) => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.color.multiplyScalar(0.6).lerp(new THREE.Color(cfg.tint), 0.5)); });
+    v.actor = actor;
+    v.model.group.visible = false;
+    scene.add(actor.wrapper);
+    actor.setBase(['Idle']);
+  }).catch(() => { /* mantém procedural */ });
+}
 
 function ensureEnemyView(s) {
   let v = enemyViews.get(s.id);
@@ -247,8 +559,10 @@ function ensureEnemyView(s) {
     state: s.state, walkT: 0, swingT: 0, deadTimer: 0,
     isLeader: s.type === 'chefe',
     plate, plateFill: plate.querySelector('.phpfill'), plateName: plate.querySelector('.pname'),
+    actor: null, prevX: s.x, prevZ: s.z, died: false,
   };
   enemyViews.set(s.id, v);
+  loadEnemyActor(v);
   return v;
 }
 
@@ -274,30 +588,49 @@ function syncEnemies(dt) {
     v.state = s.state;
     v.walkT = s.walkT;
     v.pos.y = terrainHeight(v.pos.x, v.pos.z) + (s.state === 'leap' ? Math.sin(Math.min(1, s.leapK) * Math.PI) * 4.5 : 0);
-    v.model.group.position.copy(v.pos);
-    v.model.group.rotation.y = v.ry - (FACE_X.has(v.type) ? Math.PI / 2 : 0);
-    if (s.state === 'dead') {
-      v.deadTimer += dt;
-      v.model.group.rotation.z = Math.min(Math.PI / 2, v.deadTimer * 4);
-    } else {
-      v.deadTimer = 0;
-      v.model.group.rotation.z = 0;
-    }
-    v.model.group.rotation.x = s.state === 'surrender' ? 0.5 : 0;
     if (s.state === 'surrender') v.plateName.style.color = '#ffe07a';
-    const ls = Math.sin(v.walkT) * 0.6;
-    if (v.model.legs) {
-      for (let i = 0; i < v.model.legs.length; i++) v.model.legs[i].rotation.x = i % 2 ? ls : -ls;
+
+    if (v.actor) {
+      // ---- modelo GLTF animado ----
+      const moved = Math.hypot(v.pos.x - v.prevX, v.pos.z - v.prevZ) > 0.02;
+      v.actor.wrapper.position.copy(v.pos);
+      v.actor.wrapper.rotation.set(0, v.ry, 0);
+      if (s.state === 'dead') {
+        if (!v.died) { v.actor.trigger(['Death']); v.died = true; }
+      } else {
+        v.died = false;
+        const moving = moved || s.state === 'chase' || s.state === 'return' || s.state === 'flee';
+        v.actor.setBase(moving ? v.cfg.walk : ['Idle']);
+      }
+      v.actor.update(dt);
+    } else {
+      // ---- modelo procedural (besouros, caranguejo, ou GLTF ainda carregando) ----
+      v.model.group.position.copy(v.pos);
+      v.model.group.rotation.y = v.ry - (FACE_X.has(v.type) ? Math.PI / 2 : 0);
+      if (s.state === 'dead') {
+        v.deadTimer += dt;
+        v.model.group.rotation.z = Math.min(Math.PI / 2, v.deadTimer * 4);
+      } else {
+        v.deadTimer = 0;
+        v.model.group.rotation.z = 0;
+      }
+      v.model.group.rotation.x = s.state === 'surrender' ? 0.5 : 0;
+      const ls = Math.sin(v.walkT) * 0.6;
+      if (v.model.legs) {
+        for (let i = 0; i < v.model.legs.length; i++) v.model.legs[i].rotation.x = i % 2 ? ls : -ls;
+      }
+      if (v.model.armR) {
+        if (v.swingT > 0) { v.swingT -= dt; v.model.armR.rotation.x = -2.2 * (v.swingT / 0.3); }
+        else v.model.armR.rotation.x = ls * 0.5;
+        if (v.model.armL) v.model.armL.rotation.x = -ls * 0.5;
+      }
     }
-    if (v.model.armR) {
-      if (v.swingT > 0) { v.swingT -= dt; v.model.armR.rotation.x = -2.2 * (v.swingT / 0.3); }
-      else v.model.armR.rotation.x = ls * 0.5;
-      if (v.model.armL) v.model.armL.rotation.x = -ls * 0.5;
-    }
+    v.prevX = v.pos.x; v.prevZ = v.pos.z;
   }
   for (const [id, v] of enemyViews) {
     if (!seen.has(id)) {
       scene.remove(v.model.group);
+      if (v.actor) scene.remove(v.actor.wrapper);
       v.plate.remove();
       enemyViews.delete(id);
       if (target === v) setTarget(null);
@@ -318,6 +651,7 @@ function processSimEvents() {
         break;
       case 'eatk': {
         if (v) v.swingT = 0.3;
+        if (v && v.actor && v.cfg) v.actor.trigger(v.cfg.attack, { speed: 1.4 });
         // flecha visual dos atiradores — de quem atira até a vítima
         if (v && v.def.ranged) {
           const victim = ev.pid === myPid() ? player.pos : remoteHeroes.get(ev.pid)?.model.group.position;
@@ -354,6 +688,11 @@ function processSimEvents() {
       }
       case 'estun': {
         if (v) floatText(v.pos, '💫 atordoado', '#ffe9a8', 16);
+        break;
+      }
+      case 'ecombo': {
+        if (v) floatText(v.pos, '⚔️ COMBO!', '#ffd24a', 22);
+        if (ev.pid === myPid()) beep(520, 0.12, 'square', 0.06, 200);
         break;
       }
       case 'eheal': {
@@ -431,6 +770,17 @@ function requestSpawnBalverine() {
   noiseBurst(0.6, 0.1);
   beep(70, 0.9, 'sawtooth', 0.09, -25);
   centerMsg('Um uivo ecoa pelas colinas…', 'O Balverine desperta na Floresta Sombria');
+}
+function requestSpawnShadowKnight() {
+  if (net.connected) sendMsg({ t: 'spawnShadowKnight' });
+  else localSim.spawnShadowKnight();
+}
+function requestSpawnMalachi() {
+  if (net.connected) sendMsg({ t: 'spawnMalachi' });
+  else localSim.spawnMalachi();
+  noiseBurst(0.8, 0.12);
+  beep(55, 1.1, 'sawtooth', 0.1, -20);
+  centerMsg('O ar racha com energia sombria…', 'Lorde Malachi ergue-se das Pedras do Ritual');
 }
 
 // selection ring
@@ -568,6 +918,13 @@ function onEnemyDeath(e, mine, killerPid) {
     if (e.def.renown) gainRenown(e.def.renown);
     const drop = rollDrop(e.type, e.def.lvl);
     if (drop) addItem(drop);
+    if (e.type === 'hobbe_chefe' && !player.silverKey) {
+      player.silverKey = true;
+      toast('🗝️ O Capitão Hobbe largou a Chave de Prata!');
+      floatText(e.pos, '🗝️ Chave de Prata', '#d8e0ff', 18);
+      beep(1100, 0.15, 'sine', 0.06); setTimeout(() => beep(1500, 0.2, 'sine', 0.06), 130);
+      saveGame();
+    }
     questCredit(e);
   } else if (killerPid > 0 && player.pos.distanceTo(e.pos) < 30) {
     // caçada em grupo: aliado perto ganha metade do XP e crédito de missão
@@ -601,6 +958,25 @@ function questCredit(e) {
     quests.q3.count = 1;
     quests.q3.state = 'done';
     centerMsg('O Balverine foi derrotado!', 'Retorne ao Mestre da Guilda');
+    updateQuestUI(); saveGame();
+  }
+  if (e.type === 'caranguejo' && quests.q4.state === 'active' && quests.q4.count < quests.q4.goal) {
+    quests.q4.count++;
+    floatText(e.pos, `Caranguejos: ${quests.q4.count}/${quests.q4.goal}`, '#8fd0ff', 13);
+    if (quests.q4.count >= quests.q4.goal) { quests.q4.state = 'done'; centerMsg('Maré Vermelha', 'Retorne ao Pescador Jonas'); }
+    updateQuestUI(); saveGame();
+  }
+  // arco principal
+  if (e.type === 'cavaleiro_sombrio' && quests.mq.stage === 'lieutenant') {
+    quests.mq.stage = 'toRitual';
+    floatText(e.pos, '🗝️ Uma pista sobre Malachi…', '#c8a0ff', 15);
+    centerMsg('O Cavaleiro Sombrio tomba', 'Ele sussurra: "as Pedras… do Ritual…" — retorne à Guilda');
+    updateQuestUI(); saveGame();
+  }
+  if (e.type === 'malachi' && quests.mq.stage === 'confront') {
+    quests.mq.stage = 'choice';
+    // Malachi cai de joelhos em vez de morrer — a escolha é sua
+    centerMsg('Malachi está de joelhos', 'A máscara racha… aproxime-se e decida o destino dele');
     updateQuestUI(); saveGame();
   }
 }
@@ -776,7 +1152,11 @@ function tryAbility(i) {
   if (gcd > 0 || cooldowns[i] > 0) return;
   if (player.will < ab.cost) { errorMsg('Vontade insuficiente'); return; }
   if (ab.needTarget) {
-    if (!target || target.state === 'dead' || target.state === 'surrender') { errorMsg('Você não tem um alvo'); return; }
+    if (!target || target.state === 'dead' || target.state === 'surrender') {
+      // Golpe sem alvo inimigo: talvez você esteja atacando um aldeão (crime)
+      if (i === 0 && strikeNearbyVillager()) { cooldowns[0] = ab.cd; gcd = 1.0; return; }
+      errorMsg('Você não tem um alvo'); return;
+    }
     const d = Math.hypot(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
     const range = i === 0 ? equippedStats().range : ab.range; // golpe usa o alcance da arma
     if (d > range) { errorMsg('Fora de alcance'); return; }
@@ -850,15 +1230,29 @@ function updateQuestUI() {
   if (quests.q2.state === 'done') lines.push(`<b>O Acampamento dos Bandidos</b><br><span class="done">Retorne a Whisper</span>`);
   if (quests.q3.state === 'active') lines.push(`<b>A Fera da Floresta</b><br>Balverine: <span>${quests.q3.count}/1</span>`);
   if (quests.q3.state === 'done') lines.push(`<b>A Fera da Floresta</b><br><span class="done">Retorne ao Mestre da Guilda</span>`);
+  if (quests.q4.state === 'active') lines.push(`<b>Maré Vermelha</b><br>Caranguejos: <span class="${quests.q4.count >= quests.q4.goal ? 'done' : ''}">${quests.q4.count}/${quests.q4.goal}</span>`);
+  if (quests.q4.state === 'done') lines.push(`<b>Maré Vermelha</b><br><span class="done">Retorne ao Pescador Jonas</span>`);
+  // arco principal
+  const ms = quests.mq.stage;
+  const MQ = (t) => `<b style="color:#c8a0ff">⚔ A Sombra sobre Albion</b><br>${t}`;
+  if (ms === 'lieutenant') lines.push(MQ('Derrote o <span>Cavaleiro Sombrio</span> na Floresta Sombria'));
+  if (ms === 'toRitual') lines.push(MQ('<span class="done">Retorne ao Mestre da Guilda</span>'));
+  if (ms === 'confront') lines.push(MQ('Enfrente <span>Lorde Malachi</span> nas Pedras do Ritual (leste da floresta)'));
+  if (ms === 'choice') lines.push(MQ('Decida o destino de <span>Malachi</span> nas Pedras do Ritual'));
   $('questTracker').style.display = lines.length ? 'block' : 'none';
   $('questText').innerHTML = lines.join('<hr style="border-color:rgba(138,109,47,.3);margin:6px 0">');
 
   // quest markers
-  guildmaster.marker.visible = quests.q1.state === 'available' || quests.q1.state === 'done' ||
-    (quests.q2.state === 'completed' && (quests.q3.state === 'available' || quests.q3.state === 'locked')) || quests.q3.state === 'done';
-  guildmaster.marker.material = makeTextSprite(quests.q1.state === 'done' || quests.q3.state === 'done' ? '?' : '!').material;
+  const gmReturn = quests.q1.state === 'done' || quests.q3.state === 'done' || ms === 'toRitual';
+  const gmOffer = quests.q1.state === 'available' ||
+    (quests.q2.state === 'completed' && (quests.q3.state === 'available' || quests.q3.state === 'locked')) ||
+    ms === 'available' || ms === 'confront';
+  guildmaster.marker.visible = gmReturn || gmOffer;
+  guildmaster.marker.material = makeTextSprite(gmReturn ? '?' : '!').material;
   whisper.marker.visible = (quests.q1.state === 'completed' && quests.q2.state !== 'completed' && quests.q2.state !== 'active') || quests.q2.state === 'done';
   whisper.marker.material = makeTextSprite(quests.q2.state === 'done' ? '?' : '!').material;
+  jonas.marker.visible = quests.q4.state === 'available' || quests.q4.state === 'done';
+  jonas.marker.material = makeTextSprite(quests.q4.state === 'done' ? '?' : '!').material;
 }
 
 // ============================================================ dialogs
@@ -882,6 +1276,64 @@ const closeBtn = { label: 'Fechar' };
 
 function talkTo(npc) {
   if (npc.role === 'guildmaster') {
+    // limpar a ficha criminal tem prioridade — pague a multa à Guilda
+    if (player.bounty > 0) {
+      const fine = Math.ceil(player.bounty) * 5;
+      showDialog('Mestre da Guilda',
+        `"Chegaram-me queixas sobre você, herói. Os guardas não esquecem. Pague a multa e limparei seu nome — ou continue foragido."`,
+        `Multa: ${fine} 🪙 (procura ${Math.ceil(player.bounty)}/100)`,
+        [{ label: `Pagar ${fine} 🪙`, cls: 'good', cb: () => {
+          if (player.gold < fine) { errorMsg('Ouro insuficiente'); return; }
+          player.gold -= fine; player.bounty = 0;
+          toast('⚖️ Sua ficha foi limpa');
+          centerMsg('Nome limpo', 'Os guardas baixam as armas');
+          saveGame();
+        } }, closeBtn]);
+      return;
+    }
+    // desbloqueia o arco principal depois de vencer o Balverine
+    if (quests.q3.state === 'completed' && quests.mq.stage === 'locked') quests.mq.stage = 'available';
+    const mq = quests.mq;
+    if (mq.stage !== 'locked') {
+      if (mq.stage === 'available') {
+        showDialog('A Sombra sobre Albion',
+          'Herói… há algo que a Guilda temeu por gerações. Lorde Malachi foi o maior de nós — até fazer um pacto com as sombras. Agora ele retornou, e seu Cavaleiro Sombrio já ronda a Floresta Sombria. Detenha o cavaleiro; ele nos levará a Malachi.',
+          'Ato I — Recompensa: 400 XP, +12 renome',
+          [{ label: 'Aceitar o chamado', cls: 'good', cb: () => { mq.stage = 'lieutenant'; requestSpawnShadowKnight(); updateQuestUI(); centerMsg('A Sombra sobre Albion', 'Cace o Cavaleiro Sombrio na Floresta Sombria'); saveGame(); } }, closeBtn]);
+        return;
+      }
+      if (mq.stage === 'lieutenant') {
+        showDialog('Mestre da Guilda', 'O Cavaleiro Sombrio aguarda na Floresta Sombria, ao sul. Derrote-o e descubra onde Malachi se esconde.', '', [closeBtn]);
+        return;
+      }
+      if (mq.stage === 'toRitual') {
+        showDialog('A Sombra sobre Albion',
+          'As Pedras do Ritual… então é lá que ele renasce. A leste da floresta, onde os antigos menires sangram luz roxa. Vá, herói — mas saiba que Malachi já foi como você. Talvez ainda haja algo a salvar… ou não.',
+          'Ato II concluído — o clímax o aguarda',
+          [{ label: 'Completar Ato II (+400 XP, +12 renome)', cls: 'good', cb: () => {
+            mq.stage = 'confront';
+            gainXP(400); gainRenown(12);
+            centerMsg('Rumo às Pedras do Ritual', 'Enfrente Lorde Malachi a leste da Floresta Sombria');
+            updateQuestUI(); saveGame();
+          } }]);
+        return;
+      }
+      if (mq.stage === 'confront') {
+        showDialog('Mestre da Guilda', 'Lorde Malachi o espera nas Pedras do Ritual, a leste da Floresta Sombria. Que os Antigos guiem sua lâmina.', '', [closeBtn]);
+        return;
+      }
+      if (mq.stage === 'choice') {
+        showDialog('Mestre da Guilda', 'Malachi caiu por sua mão nas Pedras do Ritual — mas o destino dele ainda está em aberto. Retorne lá e decida.', '', [closeBtn]);
+        return;
+      }
+      if (mq.stage === 'completed') {
+        const ep = mq.ending === 'redeemed' ? 'Você redimiu Malachi — e Albion floresce sob a luz do seu exemplo.'
+          : mq.ending === 'executed' ? 'Você destruiu Malachi. Albion está segura… e teme o poder que você agora carrega.'
+          : 'A Sombra foi vencida.';
+        showDialog('Lenda de Albion', ep, '', [closeBtn]);
+        return;
+      }
+    }
     if (quests.q1.state === 'available') {
       showDialog('Besouros no Pomar',
         'Bem-vindo, jovem herói! Besouros gigantes infestaram o pomar a leste. Uma primeira missão digna da Guilda: elimine 8 deles.',
@@ -942,7 +1394,32 @@ function talkTo(npc) {
       showDialog('Whisper', 'Nada mal para um novato, hein? Até a próxima caçada.', '', [closeBtn]);
     }
   } else if (npc.role === 'vendor') {
-    openShop();
+    if (shopsOpen()) openShop();
+    else showDialog('Barnum', '"A loja está fechada, amigo. Volte com a luz do dia!"', '', [closeBtn]);
+  } else if (npc.role === 'vendor2') {
+    if (shopsOpen()) openShopSal();
+    else showDialog('Mercadora Sal', '"Fechado até o amanhecer, forasteiro."', '', [closeBtn]);
+  } else if (npc.role === 'fisher') {
+    if (quests.q4.state === 'available') {
+      showDialog('Maré Vermelha',
+        'Ah, um aventureiro! Os caranguejos da maré tomaram a praia ao norte e rasgam minhas redes toda santa manhã. Limpe 8 deles e este velho arco de família é seu.',
+        'Recompensa: 200 XP, 100 ouro, Arco Longo (Raro), +8 renome',
+        [{ label: 'Aceitar missão', cb: () => { quests.q4.state = 'active'; updateQuestUI(); centerMsg('Nova missão', 'Maré Vermelha'); saveGame(); } }, closeBtn]);
+    } else if (quests.q4.state === 'active') {
+      showDialog('Pescador Jonas', `Ainda ouço as garras estalando na praia… (${quests.q4.count}/${quests.q4.goal})`, '', [closeBtn]);
+    } else if (quests.q4.state === 'done') {
+      showDialog('Maré Vermelha', 'Pelas marés! As redes estão salvas. Toma — o arco era do meu avô, mas contigo ele caça de novo.',
+        'Recompensa: 200 XP, 100 ouro, Arco Longo (Raro), +8 renome',
+        [{ label: 'Completar missão', cb: () => {
+          quests.q4.state = 'completed';
+          gainXP(200); player.gold += 100; gainRenown(8); changeMorality(4);
+          addItem({ wpn: 'arco_longo', rar: 'raro' });
+          centerMsg('Missão completa!', 'Arco Longo (Raro) recebido');
+          updateQuestUI(); saveGame();
+        } }]);
+    } else {
+      showDialog('Pescador Jonas', 'O mar anda generoso desde que você limpou a praia. Bons ventos, herói.', '', [closeBtn]);
+    }
   } else {
     const good = player.morality >= 40, evil = player.morality <= -40;
     const lines = good ? ['Que auréola magnífica!', 'Um verdadeiro herói entre nós!', 'Abençoado seja!'] :
@@ -973,10 +1450,45 @@ function openShop() {
     buttons.push({ label: `${a.icon} ${a.name} — ${a.price} 🪙`, cb: buy(a.price, () => addItem({ arm: ak, rar: 'comum' })) });
   }
   if (!player.luckCharm) buttons.push({ label: '🍀 Amuleto da Sorte — 300 🪙 (+8% dano)', cb: buy(300, () => { player.luckCharm = true; toast('Comprou: Amuleto da Sorte (+8% dano)'); saveGame(); }) });
+  if (player.fish > 0) buttons.push({ label: `🐟 Vender ${player.fish} peixe(s) — ${player.fish * 12} 🪙`, cls: 'good', cb: () => { player.gold += player.fish * 12; toast(`Vendeu ${player.fish} peixe(s)`); player.fish = 0; saveGame(); beep(1250, 0.1, 'sine', 0.05); openShop(); } });
   buttons.push(closeBtn);
   showDialog('Barnum, o Mercador',
     `"Uma pechincha fabulosa, amigo! Palavra de Barnum." — Você tem ${player.gold} 🪙`,
     '', buttons);
+}
+
+function openShopSal() {
+  const buy = (cost, cb) => () => {
+    if (player.gold < cost) { errorMsg('Ouro insuficiente'); openShopSal(); return; }
+    player.gold -= cost;
+    cb();
+    beep(1250, 0.09, 'sine', 0.05);
+    openShopSal();
+  };
+  const buttons = [
+    { label: '🧪 Poção de Vida — 50 🪙', cb: buy(50, () => { player.potions.hp++; toast('Comprou: Poção de Vida'); }) },
+    { label: '🧢 Capuz de Couro — 45 🪙', cb: buy(45, () => addItem({ arm: 'couro_capuz', rar: 'comum' })) },
+    { label: '👖 Calças de Couro — 60 🪙', cb: buy(60, () => addItem({ arm: 'couro_calcas', rar: 'comum' })) },
+    { label: '🥾 Botas de Ferro — 120 🪙', cb: buy(120, () => addItem({ arm: 'ferro_botas', rar: 'comum' })) },
+    { label: '⛓️ Grevas de Ferro — 180 🪙', cb: buy(180, () => addItem({ arm: 'ferro_grevas', rar: 'comum' })) },
+  ];
+  if (player.fish > 0) buttons.push({ label: `🐟 Vender ${player.fish} peixe(s) — ${player.fish * 14} 🪙 (bom preço!)`, cls: 'good', cb: () => { player.gold += player.fish * 14; toast(`Vendeu ${player.fish} peixe(s)`); player.fish = 0; saveGame(); beep(1250, 0.1, 'sine', 0.05); openShopSal(); } });
+  buttons.push(closeBtn);
+  showDialog('Mercadora Sal',
+    `"Direto dos navios, forasteiro — mercadoria que o Barnum nem sonha." — Você tem ${player.gold} 🪙`,
+    '', buttons);
+}
+
+function travelGate(fromGate) {
+  const other = GATES.find((g) => g !== fromGate);
+  if (!other) return;
+  ringEffect(player.pos, 0x7fe8ff, 7);
+  beep(420, 0.5, 'sine', 0.07, 480);
+  player.pos.set(other.x + 2.5, terrainHeight(other.x + 2.5, other.z + 2.5), other.z + 2.5);
+  ringEffect(player.pos, 0x7fe8ff, 7);
+  centerMsg('Portal Cullis', 'A magia antiga te carrega pelos ventos…');
+  setTimeout(() => beep(880, 0.4, 'sine', 0.06, -320), 350);
+  saveGame();
 }
 
 function confrontLeader() {
@@ -1174,6 +1686,7 @@ function updateCharPanel() {
   $('cKills').textContent = player.kills;
   $('cDef').textContent = `${totalDefense().toFixed(0)} (${Math.round(damageReduction() * 100)}% redução)`;
   $('cWeight').textContent = totalWeight() === 0 ? 'leve' : `${totalWeight()} (rolamento custa ${Math.round(rollCost())})`;
+  $('cMats').textContent = `🌿 ${player.mats.herb}  ⛏️ ${player.mats.ore}  🐟 ${player.fish}`;
   $('dStrLvl').textContent = player.disc.str.lvl;
   $('dSklLvl').textContent = player.disc.skl.lvl;
   $('dWilLvl').textContent = player.disc.wil.lvl;
@@ -1189,6 +1702,303 @@ function toggleCharPanel() {
 }
 
 // ============================================================ interactions
+// ============================================================ pesca (minigame de timing)
+const fishing = { active: false, phase: 'idle', mark: 0, dir: 1, zoneStart: 0, zoneW: 0, waitT: 0 };
+const FISH_KINDS = [
+  { name: 'Sardinha', icon: '🐟', gold: 8, w: 40 },
+  { name: 'Truta', icon: '🐠', gold: 18, w: 30 },
+  { name: 'Robalo', icon: '🐡', gold: 30, w: 18 },
+  { name: 'Salmão Real', icon: '🐟', gold: 55, w: 9 },
+  { name: 'Bota velha', icon: '🥾', gold: 1, w: 12 },
+];
+function nearWater() {
+  // borda de qualquer corpo d'água: perto o suficiente do centro, mas em terra seca
+  for (const w of WATERS) {
+    const d = Math.hypot(player.pos.x - w.x, player.pos.z - w.z);
+    if (d < w.r + w.shore + 3 && d > w.r - 2 && terrainHeight(player.pos.x, player.pos.z) > w.waterY - 0.4) return true;
+  }
+  return false;
+}
+function startFishing() {
+  if (fishing.active) return;
+  fishing.active = true;
+  fishing.phase = 'wait';
+  fishing.waitT = 0.8 + Math.random() * 2.5;
+  $('fishing').style.display = 'block';
+  $('fishMsg').textContent = 'Esperando um peixe morder…';
+  $('fishZone').style.opacity = '0';
+  $('fishMark').style.left = '0%';
+  beep(300, 0.2, 'sine', 0.04, 60);
+}
+function endFishing(msg) {
+  fishing.active = false;
+  fishing.phase = 'idle';
+  $('fishing').style.display = 'none';
+  if (msg) floatText(player.pos, msg, '#8fd0ff', 15);
+}
+function updateFishing(dt) {
+  if (!fishing.active) return;
+  if (player.moving || player.dead) { endFishing('escapou…'); return; }
+  if (fishing.phase === 'wait') {
+    fishing.waitT -= dt;
+    if (fishing.waitT <= 0) {
+      fishing.phase = 'bite';
+      fishing.zoneW = 22 + Math.random() * 14;             // largura da zona verde (%)
+      fishing.zoneStart = 8 + Math.random() * (92 - fishing.zoneW - 8);
+      fishing.mark = 0; fishing.dir = 1;
+      $('fishZone').style.opacity = '0.85';
+      $('fishZone').style.left = fishing.zoneStart + '%';
+      $('fishZone').style.width = fishing.zoneW + '%';
+      $('fishMsg').textContent = 'FISGA! Espaço na zona verde!';
+      beep(700, 0.1, 'square', 0.05);
+    }
+  } else if (fishing.phase === 'bite') {
+    fishing.mark += fishing.dir * dt * 95;
+    if (fishing.mark >= 100) { fishing.mark = 100; fishing.dir = -1; }
+    if (fishing.mark <= 0) { fishing.mark = 0; fishing.dir = 1; }
+    $('fishMark').style.left = fishing.mark + '%';
+  }
+}
+function hookFish() {
+  if (!fishing.active || fishing.phase !== 'bite') { if (fishing.active) endFishing('cedo demais…'); return; }
+  const inZone = fishing.mark >= fishing.zoneStart && fishing.mark <= fishing.zoneStart + fishing.zoneW;
+  if (!inZone) { endFishing('errou o tempo!'); beep(140, 0.2, 'square', 0.05); return; }
+  let total = FISH_KINDS.reduce((s, f) => s + f.w, 0), roll = Math.random() * total;
+  let fish = FISH_KINDS[0];
+  for (const f of FISH_KINDS) { roll -= f.w; if (roll <= 0) { fish = f; break; } }
+  player.fish++;
+  player.gold += fish.gold;
+  gainDiscXP('skl', 12); // pesca treina Habilidade
+  toast(`${fish.icon} Pescou: ${fish.name} (+${fish.gold} 🪙)`);
+  beep(900, 0.1, 'sine', 0.05); setTimeout(() => beep(1300, 0.15, 'sine', 0.05), 110);
+  ringEffect(player.pos, 0x7fd0ff, 2);
+  endFishing('');
+  saveGame();
+}
+
+// ============================================================ casa
+function houseRentDue() {
+  return player.ownedHouse ? Math.max(0, (SKY.day - player.rentDay) * HOUSE.rentPerDay) : 0;
+}
+function openHouseDialog() {
+  if (!player.ownedHouse) {
+    showDialog('Casa à Venda — Pedravento',
+      'Uma aconchegante cabana de pedra e palha, com lareira e vista para a praça. Uma escritura e ela é sua, herói.',
+      `Preço: ${HOUSE.price} 🪙 · rende ${HOUSE.rentPerDay} 🪙 de aluguel por dia`,
+      [{ label: `Comprar (${HOUSE.price} 🪙)`, cls: 'good', cb: () => {
+        if (player.gold < HOUSE.price) { errorMsg('Ouro insuficiente'); return; }
+        player.gold -= HOUSE.price;
+        player.ownedHouse = true;
+        player.rentDay = SKY.day;
+        gainRenown(5); changeMorality(2);
+        toast('🏠 Você agora tem um lar em Pedravento!');
+        centerMsg('Um lar em Albion', 'Descanse aqui e receba o aluguel dos inquilinos');
+        saveGame();
+      } }, closeBtn]);
+  } else {
+    const rent = houseRentDue();
+    showDialog('Seu Lar — Pedravento',
+      rent > 0 ? `Os inquilinos deixaram ${rent} 🪙 de aluguel na sua porta.` : 'Seu lar, doce lar. Ainda sem aluguel novo — volte em outro dia.',
+      '',
+      [
+        ...(rent > 0 ? [{ label: `Coletar ${rent} 🪙`, cls: 'good', cb: () => {
+          player.gold += rent; player.rentDay = SKY.day;
+          toast(`🪙 +${rent} de aluguel`); beep(1250, 0.1, 'sine', 0.05); saveGame();
+        } }] : []),
+        { label: 'Descansar até o amanhecer', cb: () => {
+          SKY.day += SKY.dayT > 0.1 ? 1 : 0;
+          SKY.dayT = 0.1;
+          player.hp = player.maxHp; player.will = player.maxWill; player.stam = player.maxStam;
+          centerMsg('Você descansou', 'Um novo dia nasce sobre Albion');
+          floatText(player.pos, 'zzz… 😴', '#8fa8d8', 18);
+          saveGame();
+        } },
+        closeBtn,
+      ]);
+  }
+}
+
+// ============================================================ crimes & procura
+function commitCrime(bounty, moralityHit, label) {
+  player.bounty = Math.min(100, player.bounty + bounty);
+  player.lastCrime = time;
+  changeMorality(moralityHit);
+  const wasWanted = player.bounty - bounty > 0;
+  if (!wasWanted) {
+    centerMsg('PROCURADO!', 'Os guardas de Pedravento vão atrás de você');
+    beep(160, 0.5, 'sawtooth', 0.06, -40);
+  }
+  floatText(player.pos, label, '#ff5a5a', 15);
+  saveGame();
+}
+
+// atacar um aldeão inocente (Golpe sem alvo inimigo, aldeão à frente e no alcance)
+function strikeNearbyVillager() {
+  let victim = null, bd = 3.2;
+  for (const n of npcs) {
+    if (n.asleep || n.role === 'guard') continue;
+    const d = n.pos.distanceTo(player.pos);
+    if (d < bd) { bd = d; victim = n; }
+  }
+  if (!victim) return false;
+  player.swingT = 0.35;
+  beep(160, 0.08, 'square', 0.06);
+  floatText(victim.pos, '💥', '#ff5a5a', 20);
+  victim.fleeT = 6; // foge apavorado
+  commitCrime(35, -8, '⚔️ Você atacou um inocente!');
+  return true;
+}
+
+// ============================================================ clímax: Malachi
+function malachiAlive() {
+  return enemies.some((e) => e.type === 'malachi' && e.state !== 'dead');
+}
+function confrontMalachi() {
+  if (malachiAlive()) return;
+  requestSpawnMalachi();
+}
+function decideMalachi() {
+  showDialog('O Destino de Lorde Malachi',
+    '"Então… o pupilo supera o mestre. Faça o que veio fazer, herói. Mas saiba: eu também já quis salvar Albion, um dia."',
+    'A sua escolha definirá a sua lenda.',
+    [
+      { label: '😇 Redimir — trazê-lo de volta à luz', cls: 'good', cb: () => {
+        quests.mq.stage = 'completed'; quests.mq.ending = 'redeemed';
+        changeMorality(30); gainRenown(30); gainXP(1000); player.gold += 400;
+        addItem({ wpn: 'espada_longa', rar: 'lendario' });
+        spawnHeroStatue(false);
+        centerMsg('Malachi é redimido', 'A Sombra se dissipa — Albion viverá em paz. Você é uma Lenda.');
+        toast('🏆 Espada Longa Lendária + estátua erguida na sua honra!');
+        updateQuestUI(); saveGame();
+      } },
+      { label: '😈 Executar — reclamar o poder das sombras', cls: 'evil', cb: () => {
+        quests.mq.stage = 'completed'; quests.mq.ending = 'executed';
+        changeMorality(-30); gainRenown(30); gainXP(1000); player.gold += 600;
+        addItem({ wpn: 'martelo', rar: 'lendario' });
+        spawnHeroStatue(true);
+        centerMsg('Malachi é destruído', 'O poder sombrio é seu. Albion te obedecerá… por medo.');
+        toast('🏆 Martelo de Guerra Lendário — forjado no poder de Malachi!');
+        updateQuestUI(); saveGame();
+      } },
+    ]);
+}
+
+// ============================================================ coleta & crafting
+function gatherNode(node) {
+  if (node.cooldown > 0) return;
+  const amt = 1 + Math.floor(Math.random() * 2);
+  if (node.kind === 'herb') {
+    player.mats.herb += amt;
+    floatText(player.pos, `🌿 +${amt} Erva`, '#8adcff', 15);
+    beep(600, 0.1, 'sine', 0.04, 120);
+  } else {
+    player.mats.ore += amt;
+    gainDiscXP('str', 8); // minerar treina Força
+    floatText(player.pos, `⛏️ +${amt} Minério`, '#bfe0ff', 15);
+    noiseBurst(0.12, 0.04);
+    beep(280, 0.12, 'square', 0.04, -80);
+  }
+  node.cooldown = 35;
+  node.model.visible = false;
+  saveGame();
+}
+
+const nextRarity = (key) => {
+  const i = RARITIES.findIndex((r) => r.key === key);
+  return i >= 0 && i < RARITIES.length - 1 ? RARITIES[i + 1] : null;
+};
+function openForge() {
+  const eq = player.equipped;
+  const w = WEAPONS[eq.wpn];
+  const next = nextRarity(eq.rar);
+  const lines = [];
+  const buttons = [];
+  if (!next) {
+    lines.push(`Sua ${w.name} já é Lendária — não há como forjá-la melhor.`);
+  } else {
+    const oreCost = 2 + RARITIES.findIndex((r) => r.key === next.key) * 2;
+    const goldCost = 60 + RARITIES.findIndex((r) => r.key === next.key) * 90;
+    lines.push(`Melhorar ${w.name} (${rarityOf(eq.rar).name} → ${next.name}).`);
+    buttons.push({ label: `Forjar — ${oreCost}⛏️ + ${goldCost}🪙`, cls: 'good', cb: () => {
+      if (player.mats.ore < oreCost) { errorMsg('Minério insuficiente'); return; }
+      if (player.gold < goldCost) { errorMsg('Ouro insuficiente'); return; }
+      player.mats.ore -= oreCost; player.gold -= goldCost;
+      eq.rar = next.key;
+      updateHeroBody();
+      toast(`⚒️ ${w.name} agora é ${next.name}!`);
+      centerMsg('Arma forjada!', `${w.name} — ${next.name}`);
+      ringEffect(player.pos, 0xff7a2a, 3);
+      beep(300, 0.1, 'square', 0.05); setTimeout(() => beep(1100, 0.2, 'sine', 0.06), 150);
+      saveGame();
+    } });
+  }
+  showDialog('⚒️ A Forja',
+    `${lines.join(' ')}\n\nMateriais: ⛏️ ${player.mats.ore} minério · 🪙 ${player.gold} ouro`,
+    '', [...buttons, closeBtn]);
+}
+
+function openCauldron() {
+  const brew = (cost, cb, label) => () => {
+    if (player.mats.herb < (cost.herb || 0) || player.mats.ore < (cost.ore || 0)) { errorMsg('Materiais insuficientes'); openCauldron(); return; }
+    player.mats.herb -= cost.herb || 0; player.mats.ore -= cost.ore || 0;
+    cb();
+    beep(500, 0.2, 'sine', 0.05, 150);
+    ringEffect(player.pos, 0x7fe07a, 2);
+    saveGame();
+    openCauldron();
+  };
+  showDialog('🧪 Caldeirão de Alquimia',
+    `As ervas de Albion fervem em segredos.\n\nMateriais: 🌿 ${player.mats.herb} erva · ⛏️ ${player.mats.ore} minério`,
+    '',
+    [
+      { label: '🧪 Poção de Vida (3🌿)', cb: brew({ herb: 3 }, () => { player.potions.hp++; toast('Preparou: Poção de Vida'); }) },
+      { label: '🔮 Poção de Vontade (2🌿 + 1⛏️)', cb: brew({ herb: 2, ore: 1 }, () => { player.potions.will++; toast('Preparou: Poção de Vontade'); }) },
+      closeBtn,
+    ]);
+}
+
+// ============================================================ Caverna dos Hobbes
+function caveTeleport(x, z, title, sub) {
+  ringEffect(player.pos, 0x8a6d4a, 5);
+  noiseBurst(0.25, 0.05);
+  player.pos.set(x, terrainHeight(x, z), z);
+  ringEffect(player.pos, 0x8a6d4a, 5);
+  centerMsg(title, sub);
+}
+function enterCave() {
+  inCave = true; // grade de masmorra (Fase 35): frio, contrastado, opressivo
+  caveTeleport(CAVE.x + 16, CAVE.z + 16, 'Caverna dos Hobbes', 'A escuridão cheira a mofo e fumaça de tocha…');
+  beep(90, 0.6, 'sawtooth', 0.06, -30);
+}
+function exitCave() {
+  inCave = false;
+  caveTeleport(CAVE.entX, CAVE.entZ + 4, 'Colinas de Pedravento', 'A luz do dia recebe você de volta');
+  beep(500, 0.4, 'sine', 0.05, 200);
+}
+function openLockedChest() {
+  if (lockedChest.opened) return;
+  if (!player.silverKey) {
+    errorMsg('Trancado — a Chave de Prata está com o Capitão Hobbe');
+    beep(140, 0.15, 'square', 0.04);
+    return;
+  }
+  lockedChest.opened = true;
+  player.silverKey = false;
+  if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
+  // tesouro digno de dungeon
+  const gold = 250;
+  player.gold += gold;
+  player.potions.hp += 2; player.potions.will += 1;
+  addItem({ wpn: 'martelo', rar: 'epico' });
+  toast(`🏆 Tesouro da Caverna: ${gold} 🪙, poções e Martelo de Guerra (Épico)!`);
+  centerMsg('O Tesouro dos Hobbes!', 'Martelo de Guerra Épico + 250 ouro');
+  ringEffect(player.pos, 0xffd24a, 5);
+  beep(660, 0.15, 'sine', 0.06); setTimeout(() => beep(880, 0.15, 'sine', 0.06), 150);
+  setTimeout(() => beep(1180, 0.3, 'sine', 0.06), 300);
+  gainRenown(6);
+  saveGame();
+}
+
 function nearestInteract() {
   let best = null;
   const consider = (dist, max, label, cb) => {
@@ -1203,11 +2013,52 @@ function nearestInteract() {
     consider(ch.pos.distanceTo(player.pos), 3.2, 'Abrir o baú', () => openChest(ch));
   }
   for (const n of npcs) {
+    if (n.asleep) continue; // dormindo — não dá pra conversar de madrugada
     consider(n.pos.distanceTo(player.pos), 5.5, `Falar com ${n.name}`, () => talkTo(n));
   }
   const ldr = getLeader();
   if (ldr && ldr.state === 'surrender') {
     consider(ldr.pos.distanceTo(player.pos), 5, 'Decidir o destino do Rufião', confrontLeader);
+  }
+  const dHouse = Math.hypot(HOUSE.doorX - player.pos.x, HOUSE.doorZ - player.pos.z);
+  consider(dHouse, 3.2, player.ownedHouse ? (houseRentDue() > 0 ? 'Entrar em casa 🏠 (aluguel!)' : 'Entrar em casa 🏠') : 'Ver casa à venda 🏠', openHouseDialog);
+  if (!fishing.active && nearWater()) {
+    consider(2.0, 3, 'Pescar 🎣', startFishing); // prioridade alta perto d'água
+  }
+  // clímax do arco principal — Pedras do Ritual
+  const dRitual = Math.hypot(RITUAL.x - player.pos.x, RITUAL.z - player.pos.z);
+  if (quests.mq.stage === 'confront' && !malachiAlive()) {
+    consider(dRitual, 6, 'Enfrentar Lorde Malachi ⚔️', confrontMalachi);
+  } else if (quests.mq.stage === 'choice') {
+    consider(dRitual, 8, 'Decidir o destino de Malachi', decideMalachi);
+  }
+  // cão farejou tesouro enterrado
+  if (dog.digTarget && !dog.digTarget.dug) {
+    const s = dog.digTarget;
+    consider(Math.hypot(s.x - player.pos.x, s.z - player.pos.z), 3, 'Cavar o tesouro 🦴', () => digTreasure(s));
+  }
+  // estações de crafting
+  consider(Math.hypot(FORGE.x - player.pos.x, FORGE.z - player.pos.z), 3, 'Usar a Forja ⚒️', openForge);
+  consider(Math.hypot(CAULDRON.x - player.pos.x, CAULDRON.z - player.pos.z), 3, 'Usar o Caldeirão 🧪', openCauldron);
+  // nós de coleta
+  for (const node of gatherables) {
+    if (node.cooldown > 0) continue;
+    consider(Math.hypot(node.x - player.pos.x, node.z - player.pos.z), 2.6,
+      node.kind === 'herb' ? 'Colher erva 🌿' : 'Minerar minério ⛏️', () => gatherNode(node));
+  }
+  // boca da caverna (mundo aberto) ↔ interior
+  const dMouth = Math.hypot(CAVE.entX - player.pos.x, CAVE.entZ - player.pos.z);
+  consider(dMouth, 3.5, 'Entrar na Caverna dos Hobbes 🕳️', enterCave);
+  const dCaveExit = Math.hypot((CAVE.x + 16) - player.pos.x, (CAVE.z + 16) - player.pos.z);
+  consider(dCaveExit, 3.5, 'Sair da caverna ☀️', exitCave);
+  // baú trancado
+  if (!lockedChest.opened) {
+    consider(Math.hypot(lockedChest.x - player.pos.x, lockedChest.z - player.pos.z), 3.2,
+      player.silverKey ? 'Destrancar o baú 🗝️' : 'Baú trancado (precisa da Chave de Prata)',
+      openLockedChest);
+  }
+  for (const g of GATES) {
+    consider(Math.hypot(g.x - player.pos.x, g.z - player.pos.z), 3.8, 'Atravessar o Portal Cullis ✨', () => travelGate(g));
   }
   return best;
 }
@@ -1225,6 +2076,9 @@ function kickChicken(c) {
   beep(300, 0.12, 'square', 0.06, 250);
   setTimeout(() => beep(1500, 0.15, 'sawtooth', 0.05, -600), 80);
   floatText(c.pos, '🐔!!', '#fff', 18);
+  // maltratar animais perto de um guarda é contravenção leve
+  const nearGuard = enemies.some((e) => e.type === 'guarda' && e.pos.distanceTo(player.pos) < 18);
+  if (nearGuard) commitCrime(12, 0, '🐔 Vandalismo!');
   if (player.kicks >= 10 && !player.achKick) {
     player.achKick = true;
     toast('🏅 Título ganho: Chuta-Galinhas');
@@ -1245,6 +2099,97 @@ function openChest(ch) {
   beep(1050, 0.12, 'sine', 0.05); setTimeout(() => beep(1350, 0.18, 'sine', 0.05), 120);
 }
 
+// ============================================================ color grade (Fase 30)
+// harmoniza a paleta do jogo inteiro: modula o grade global por hora do dia + região,
+// com transição suave (sem flicker ao cruzar biomas). O dourado Fable é o fio condutor.
+// estado de cena p/ o color grade cinematográfico (Fase 35) + DOF/grão (Fase 40)
+let inCave = false, combatThreat = false, _sCombat = 0, _sCave = 0, _dbgCombat = false, _sDof = 0, _grainT = 0;
+const _dofV = new THREE.Vector3();
+const _gTint = new THREE.Color(), _shT = new THREE.Color(), _hiT = new THREE.Color();
+// rampa do duotone: quente-terrosa de dia, fria-lunar à noite (respeita o mood da hora)
+const _shDay = new THREE.Color(0x3a2f22), _shNight = new THREE.Color(0x1e2a48);
+const _hiDay = new THREE.Color(0xfff1d6), _hiNight = new THREE.Color(0xb6c6e8);
+const _caveAmb = new THREE.Color(0x3a2a18); // ambiente quente-escuro da caverna (Fase 36)
+function updateColorGrade(dt, pos) {
+  const g = biomeGrade(pos.x, pos.z);
+  const golden = SKY.golden, night = SKY.nightF;
+  const U = gradeUniforms;
+  const k = 1 - Math.pow(0.0015, dt); // suavização exponencial (~0.25s p/ assentar)
+
+  // grade por CENA (Fase 35): combate e masmorra sobrepõem um look dramático
+  _sCombat = lerp(_sCombat, combatThreat ? 1 : 0, k);
+  _sCave = lerp(_sCave, inCave ? 1 : 0, k);
+  _sDof = lerp(_sDof, dialog.style.display === 'block' ? 1 : 0, k * 1.4); // DOF em diálogo (Fase 40)
+
+  // iluminação de interiores (Fase 36): dentro da caverna o céu quase apaga e o ambiente
+  // esquenta/escurece → as tochas viram a luz principal (penumbra quente, opressiva).
+  // updateSky reescreve sun/hemi a cada frame, então este atenuar aplica sobre o valor fresco.
+  sun.intensity *= 1 - _sCave * 0.94;
+  hemi.intensity *= 1 - _sCave * 0.72; // ambiente cai bem → tochas viram a luz principal
+  hemi.color.lerp(_caveAmb, _sCave * 0.85);
+  hemi.groundColor.lerp(_caveAmb, _sCave * 0.75);
+
+  // env-sheen do metal (Fase 38): reflete a cor do céu (azul de dia, laranja no dusk, escuro à
+  // noite); na caverna vira o âmbar quente das tochas. Uma cor compartilhada por todos os materiais.
+  if (scene.background && scene.background.isColor) {
+    envUniform.value.copy(scene.background).lerp(_caveAmb, _sCave * 0.8);
+  }
+
+  // alvo base por tempo do dia + desvio da região + cena
+  const warm    = 0.05 + golden * 0.06 - night * 0.03 + g.warm - _sCombat * 0.03;
+  const sat     = 1.12 - night * 0.24 + g.sat - _sCombat * 0.14 - _sCave * 0.20;
+  const duo     = 0.11 + golden * 0.05 + night * 0.03 + g.duo;
+  const tintAmt = (0.06 + golden * 0.05) * (1 - night * 0.7) * (1 - _sCombat * 0.6 - _sCave * 0.8) + g.tintAmt;
+  const vig     = 0.28 + night * 0.10 + _sCombat * 0.10 + _sCave * 0.16 + _sDof * 0.13; // + fecha em diálogo
+  const contrast = 1.06 + _sCombat * 0.10 + _sCave * 0.12;               // mais punch no combate/masmorra
+  const temp     = -_sCombat * 0.06 - _sCave * 0.12;                     // esfria (frio = perigo)
+  const filmic   = 0.16 + _sCombat * 0.10 + _sCave * 0.10;               // curva-S mais forte na tensão
+  U.uWarm.value    = lerp(U.uWarm.value, warm, k);
+  U.uSat.value     = lerp(U.uSat.value, sat, k);
+  U.uDuo.value     = lerp(U.uDuo.value, duo, k);
+  U.uTintAmt.value = lerp(U.uTintAmt.value, tintAmt, k);
+  U.uVignette.value = lerp(U.uVignette.value, vig, k);
+  U.uContrast.value = lerp(U.uContrast.value, contrast, k);
+  U.uTemp.value = lerp(U.uTemp.value, temp, k);
+  U.uFilmic.value = lerp(U.uFilmic.value, filmic, k);
+  U.uTint.value.lerp(_gTint.setRGB(g.tintR, g.tintG, g.tintB), k);
+  U.uShadow.value.lerp(_shT.copy(_shDay).lerp(_shNight, night), k); // sombras frias à noite
+  U.uHi.value.lerp(_hiT.copy(_hiDay).lerp(_hiNight, night), k);
+
+  // bloom controlado (Fase 33): apertado de dia (limiar alto → só emissivos brilham, não estoura);
+  // à noite o limiar cai e a força sobe → tochas, janelas, portais e runas ganham brilho quente.
+  const dark = Math.max(night, _sCave); // caverna conta como "escuro" → tochas brilham lá dentro
+  bloom.threshold = lerp(0.88 - golden * 0.14, 0.46, dark);
+  bloom.strength = lerp(0.34 + golden * 0.20, 0.85, dark);
+  bloom.radius = lerp(0.60, 0.80, dark);
+
+  // god rays (Fase 34): projeta o sol na tela; só emite raios quando ele está à frente,
+  // na tela e acima do horizonte — reforçado no golden hour, some à noite.
+  _sunNDC.copy(sun.position).project(camera);
+  const sx = _sunNDC.x * 0.5 + 0.5, sy = _sunNDC.y * 0.5 + 0.5;
+  const inFront = _sunNDC.z < 1; // ponto à frente da câmera (dentro do far)
+  const onScreen = inFront && sx > -0.25 && sx < 1.25 && sy > -0.25 && sy < 1.25;
+  let gr = 0;
+  if (onScreen && SKY.sunAlt > 0.02) {
+    const edge = clamp(1 - Math.max(Math.abs(sx - 0.5), Math.abs(sy - 0.5)) * 1.3, 0, 1); // some nas bordas
+    gr = clamp(SKY.sunAlt * 2.2, 0, 1) * (0.35 + golden * 1.1) * edge;
+  }
+  godrayUniforms.uSun.value.set(sx, sy);
+  godrayUniforms.uIntensity.value = lerp(godrayUniforms.uIntensity.value, gr, k * 0.6);
+
+  // grão de filme animado (Fase 40): tempo que avança alimenta o ruído no sharpen
+  _grainT += dt;
+  sharpen.uniforms.uTime.value = _grainT % 1000;
+
+  // profundidade de campo em diálogo (Fase 40): fundo desfoca, foco no interlocutor (herói)
+  dofUniforms.uDof.value = _sDof;
+  if (_sDof > 0.01) {
+    _dofV.copy(pos); _dofV.y += 1.3; _dofV.project(camera); // foca na cabeça do herói
+    if (_dofV.z < 1) dofUniforms.uFocus.value.set(clamp(_dofV.x * 0.5 + 0.5, 0.2, 0.8), clamp(_dofV.y * 0.5 + 0.5, 0.2, 0.8));
+  }
+}
+const _sunNDC = new THREE.Vector3();
+
 // ============================================================ input
 const keys = {};
 let camYaw = 0.6, camPitch = 0.36, camDist = 11;
@@ -1264,7 +2209,8 @@ addEventListener('keydown', (ev) => {
     if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
     return;
   }
-  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; return; }
+  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; if (fishing.active) endFishing(); return; }
+  if (fishing.active) { if (ev.code === 'Space') { ev.preventDefault(); hookFish(); } return; }
   if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
   if (ev.code === 'KeyC') { toggleCharPanel(); return; }
   if (ev.code === 'KeyI') { toggleInventory(); return; }
@@ -1364,8 +2310,14 @@ function buildSaveData() {
     q1: { state: quests.q1.state, count: quests.q1.count },
     q2: { state: quests.q2.state, count: quests.q2.count, leaderResolved: quests.q2.leaderResolved, choice: quests.q2.choice },
     q3: { state: quests.q3.state, count: quests.q3.count },
+    q4: { state: quests.q4.state, count: quests.q4.count },
+    mq: { stage: quests.mq.stage, ending: quests.mq.ending },
     disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
     talents: player.talents,
+    fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
+    silverKey: player.silverKey, lockedChestOpened: lockedChest.opened,
+    mats: player.mats, bounty: player.bounty,
+    dug: digSpots.map((s) => s.dug),
   };
 }
 function saveGame() {
@@ -1391,6 +2343,17 @@ function applySaveData(data) {
   player.equipped = data.equipped && WEAPONS[data.equipped.wpn] ? data.equipped : { wpn: 'espada_gasta', rar: 'comum' };
   player.armor = data.armor ?? { head: null, chest: null, legs: null, boots: null };
   player.talents = data.talents ?? {};
+  player.fish = data.fish ?? 0;
+  player.ownedHouse = !!data.ownedHouse;
+  player.rentDay = data.rentDay ?? 0;
+  player.silverKey = !!data.silverKey;
+  player.mats = data.mats ?? { herb: 0, ore: 0 };
+  player.bounty = data.bounty ?? 0;
+  if (Array.isArray(data.dug)) digSpots.forEach((s, i) => { s.dug = !!data.dug[i]; });
+  if (data.lockedChestOpened) {
+    lockedChest.opened = true;
+    if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
+  }
   recomputeMaxes();
   player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
   player.will = clamp(data.will ?? player.maxWill, 0, player.maxWill);
@@ -1400,8 +2363,12 @@ function applySaveData(data) {
   Object.assign(quests.q1, data.q1);
   Object.assign(quests.q2, data.q2);
   Object.assign(quests.q3, data.q3);
+  if (data.q4) Object.assign(quests.q4, data.q4);
+  if (data.mq) Object.assign(quests.mq, data.mq);
   if (!net.connected && (quests.q2.state === 'completed' || quests.q2.choice)) localSim.removeLeader();
   if (quests.q3.state === 'active') requestSpawnBalverine();
+  if (quests.mq.stage === 'lieutenant') requestSpawnShadowKnight();
+  if (quests.mq.stage === 'completed') spawnHeroStatue(quests.mq.ending === 'executed');
   updateMoralityVisuals();
   updateHeroBody();
   updateQuestUI();
@@ -1434,6 +2401,7 @@ function startGame(fromSave) {
   if (fromSave) loadGame();
   started = true;
   startMusic();
+  startAmbient();
   connectNet(
     () => {
       const cs = combatStats();
@@ -1446,7 +2414,7 @@ function startGame(fromSave) {
         str: cs.str, skl: cs.skl, wil: cs.wil,
         wpn: player.equipped.wpn,
         wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, spellMult: cs.spellMult,
-        critBonus: cs.critBonus, chainBonus: cs.chainBonus,
+        critBonus: cs.critBonus, chainBonus: cs.chainBonus, wanted: isWanted(),
         aHead: player.armor.head?.arm ?? '', aChest: player.armor.chest?.arm ?? '',
         aLegs: player.armor.legs?.arm ?? '', aBoots: player.armor.boots?.arm ?? '',
       };
@@ -1599,11 +2567,58 @@ function updateChicken(c, dt) {
   c.model.group.position.copy(c.pos);
 }
 
-// ============================================================ NPC ambient
+// ============================================================ NPC ambient & rotina diária
+function walkNpcTo(n, tx, tz, speed, dt) {
+  const dx = tx - n.pos.x, dz = tz - n.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d > 0.4) {
+    n.pos.x += (dx / d) * speed * dt;
+    n.pos.z += (dz / d) * speed * dt;
+    n.model.group.rotation.y = Math.atan2(dx, dz);
+    return false;
+  }
+  return true; // chegou
+}
+
 function updateNpc(n, dt) {
+  const dP = n.pos.distanceTo(player.pos);
+  const night = SKY.nightF > 0.6;
+
+  // aldeão apavorado (foi atacado) — corre para longe gritando
+  if (n.fleeT > 0) {
+    n.fleeT -= dt;
+    const away = n.pos.clone().sub(player.pos).setY(0);
+    if (away.lengthSq() < 0.01) away.set(1, 0, 0);
+    away.normalize();
+    n.pos.addScaledVector(away, 6 * dt);
+    n.model.group.rotation.y = Math.atan2(away.x, away.z);
+    const np = resolveStatic(n.pos.x, n.pos.z, 0.4);
+    n.pos.x = np[0]; n.pos.z = np[1];
+    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+    n.model.group.position.copy(n.pos);
+    n.sayT -= dt;
+    if (n.sayT <= 0) { n.sayT = 1.5; floatText(n.pos, 'Socorro! Guardas!', '#ff8a8a', 14); }
+    return;
+  }
+
+  if (night) {
+    // vai para a cama e "dorme" (some dentro de casa, retorna de dia)
+    const atBed = walkNpcTo(n, n.bed.x, n.bed.z, 1.8, dt);
+    if (atBed) {
+      n.asleep = true;
+      n.model.group.visible = false;
+      if (dP < 12 && Math.random() < dt * 0.4) floatText(n.bed, '💤', '#8fa8d8', 14);
+    }
+    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+    n.model.group.position.copy(n.pos);
+    return;
+  }
+
+  // amanheceu — acorda
+  if (n.asleep) { n.asleep = false; n.model.group.visible = true; }
+
   if (n.wander) {
     const evil = player.morality <= -40;
-    const dP = n.pos.distanceTo(player.pos);
     if (evil && dP < 7) {
       const away = n.pos.clone().sub(player.pos).setY(0).normalize();
       n.pos.addScaledVector(away, 3 * dt);
@@ -1615,28 +2630,142 @@ function updateNpc(n, dt) {
         const a = Math.random() * Math.PI * 2;
         n.wTarget = n.home.clone().add(new THREE.Vector3(Math.cos(a) * 7, 0, Math.sin(a) * 7));
       }
-      if (n.wTarget) {
-        const d = n.wTarget.clone().sub(n.pos).setY(0);
-        if (d.length() > 0.5) {
-          d.normalize();
-          n.pos.addScaledVector(d, 1.5 * dt);
-          n.model.group.rotation.y = Math.atan2(d.x, d.z);
-        }
-      }
+      if (n.wTarget) walkNpcTo(n, n.wTarget.x, n.wTarget.z, 1.5, dt);
     }
-    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
-    n.model.group.position.copy(n.pos);
-    // ambient chatter
-    n.sayT -= dt;
-    if (n.sayT <= 0 && dP < 9) {
-      n.sayT = 14 + Math.random() * 14;
-      const good = player.morality >= 40;
-      const lines = evil ? ['Socorro!', 'É um monstro!'] : good ? ['Um herói!', 'Que auréola!'] : ['Bom dia!', 'Belo dia, não?'];
-      floatText(n.pos, lines[Math.floor(Math.random() * lines.length)], '#ffe07a', 13);
-    } else if (n.sayT <= 0) {
-      n.sayT = 10;
+    const np = resolveStatic(n.pos.x, n.pos.z, 0.4);
+    n.pos.x = np[0]; n.pos.z = np[1];
+  } else {
+    // trabalhadores fixos voltam ao posto de dia e reassumem a pose
+    const atPost = walkNpcTo(n, n.home.x, n.home.z, 1.8, dt);
+    if (atPost) n.model.group.rotation.y = n.postRot;
+  }
+  n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+  n.model.group.position.copy(n.pos);
+
+  // ambient chatter
+  n.sayT -= dt;
+  if (n.sayT <= 0 && dP < 9) {
+    n.sayT = 14 + Math.random() * 14;
+    const good = player.morality >= 40;
+    const lines = (player.morality <= -40) ? ['Socorro!', 'É um monstro!'] : good ? ['Um herói!', 'Que auréola!'] : ['Bom dia!', 'Belo dia, não?'];
+    floatText(n.pos, lines[Math.floor(Math.random() * lines.length)], '#ffe07a', 13);
+  } else if (n.sayT <= 0) {
+    n.sayT = 10;
+  }
+}
+
+// ============================================================ cão fiel — comportamento
+const dogCoatGood = new THREE.Color(0xe8c06a), dogCoatNeutral = new THREE.Color(0xc8965a), dogCoatEvil = new THREE.Color(0x4a4038);
+function updateDogAppearance() {
+  if (dogActor) {
+    // tinge a textura do husky: normal no bem, escurecido no mal
+    const tint = player.morality <= -40 ? 0x6a6068 : player.morality >= 40 ? 0xfff2d8 : 0xffffff;
+    dogActor.root.traverse((o) => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.color.setHex(tint)); });
+    return;
+  }
+  const c = new THREE.Color();
+  if (player.morality >= 40) c.copy(dogCoatGood);
+  else if (player.morality <= -40) c.copy(dogCoatEvil);
+  else c.lerpColors(dogCoatEvil, player.morality >= 0 ? dogCoatGood : dogCoatEvil, 0.5).copy(dogCoatNeutral);
+  for (const m of dogModel.mats) if (m.color.getHex() !== 0x1a1512 && m.color.getHex() !== 0x8a6a3a) m.color.copy(c);
+}
+
+function updateDog(dt) {
+  // procura tesouro enterrado por perto para farejar
+  if (!dog.digTarget) {
+    dog.sniffT -= dt;
+    if (dog.sniffT <= 0) {
+      dog.sniffT = 2;
+      let best = null, bd = 16;
+      for (const s of digSpots) {
+        if (s.dug) continue;
+        const d = Math.hypot(s.x - player.pos.x, s.z - player.pos.z);
+        if (d < bd) { bd = d; best = s; }
+      }
+      if (best) { dog.digTarget = best; dog.state = 'dig'; floatText(dog.pos, '🦴 farejou algo!', '#e8c06a', 15); barkSound(); }
+    }
+  } else if (dog.digTarget.dug || Math.hypot(dog.digTarget.x - player.pos.x, dog.digTarget.z - player.pos.z) > 26) {
+    dog.digTarget = null; dog.state = 'follow';
+  }
+
+  // alvo de movimento
+  let tx, tz, moveSpeed;
+  if (dog.state === 'dig' && dog.digTarget) {
+    tx = dog.digTarget.x; tz = dog.digTarget.z; moveSpeed = 7;
+  } else {
+    // segue atrás do herói, deslocado para o lado
+    const behind = 2.2;
+    tx = player.pos.x - Math.sin(heroModel.group.rotation.y) * behind + Math.cos(heroModel.group.rotation.y);
+    tz = player.pos.z - Math.cos(heroModel.group.rotation.y) * behind - Math.sin(heroModel.group.rotation.y);
+    moveSpeed = player.moving ? 9.5 : 4;
+  }
+  const dx = tx - dog.pos.x, dz = tz - dog.pos.z;
+  const d = Math.hypot(dx, dz);
+  const stopDist = dog.state === 'dig' ? 1.2 : 1.6;
+  let moving = false;
+  if (d > stopDist) {
+    const step = Math.min(d - stopDist, moveSpeed * dt);
+    dog.pos.x += (dx / d) * step;
+    dog.pos.z += (dz / d) * step;
+    dog.ry = Math.atan2(dx, dz);
+    dog.walkT += dt * 14;
+    moving = true;
+  }
+  // não deixa o cão afundar na água / sair do mundo
+  if (!walkable(dog.pos.x, dog.pos.z)) { dog.pos.x = player.pos.x; dog.pos.z = player.pos.z; }
+  dog.pos.y = terrainHeight(dog.pos.x, dog.pos.z);
+  const digging = dog.state === 'dig' && dog.digTarget && d <= stopDist;
+  if (dogActor) {
+    dogActor.wrapper.position.copy(dog.pos);
+    dogActor.wrapper.rotation.y = dog.ry;
+    if (digging) dogActor.setBase(['Eating', 'Idle_2_HeadLow', 'Idle']);
+    else dogActor.setBase(moving ? (moveSpeed >= 7 ? ['Gallop', 'Walk'] : ['Walk']) : ['Idle', 'Idle_2']);
+    dogActor.update(dt);
+    if (digging && Math.random() < dt * 1.2) floatText(dog.pos, '⛏️', '#c8a24b', 13);
+  } else {
+    dogModel.group.position.copy(dog.pos);
+    dogModel.group.rotation.y = dog.ry;
+    // animação procedural de patas / rabo
+    const ls = moving ? Math.sin(dog.walkT) * 0.5 : 0;
+    dogModel.legs[0].rotation.x = ls; dogModel.legs[3].rotation.x = ls;
+    dogModel.legs[1].rotation.x = -ls; dogModel.legs[2].rotation.x = -ls;
+    const wagSpeed = player.morality >= 40 ? 20 : player.morality <= -40 ? 5 : 12;
+    dogModel.tail.rotation.y = Math.sin(time * wagSpeed) * (player.morality <= -40 ? 0.2 : 0.6);
+    dogModel.head.rotation.x = moving ? 0 : Math.sin(time * 2) * 0.08;
+    if (digging) {
+      dogModel.head.rotation.x = Math.sin(time * 18) * 0.4 - 0.2;
+      if (Math.random() < dt * 1.2) floatText(dog.pos, '⛏️', '#c8a24b', 13);
     }
   }
+
+  // late para inimigos próximos em combate
+  dog.barkT -= dt;
+  if (dog.barkT <= 0) {
+    for (const e of enemies) {
+      if (e.state === 'dead' || e.state === 'surrender') continue;
+      if (e.pos.distanceTo(player.pos) < 11) {
+        dog.barkT = 2.5;
+        floatText(dog.pos, player.morality <= -40 ? 'Grrr…' : 'Au! Au!', '#e8d5a0', 14);
+        barkSound();
+        break;
+      }
+    }
+  }
+}
+function barkSound() {
+  const evil = player.morality <= -40;
+  beep(evil ? 130 : 340, 0.09, evil ? 'sawtooth' : 'square', 0.04, evil ? -20 : -60);
+}
+function digTreasure(spot) {
+  spot.dug = true;
+  dog.digTarget = null; dog.state = 'follow';
+  player.gold += spot.loot.gold;
+  const parts = [`${spot.loot.gold} 🪙`];
+  if (spot.loot.item) { addItem(spot.loot.item); parts.push('um item'); }
+  toast(`🦴 O cão desenterrou: ${parts.join(' e ')}!`);
+  ringEffect(new THREE.Vector3(spot.x, terrainHeight(spot.x, spot.z), spot.z), 0xc8a24b, 2.5);
+  beep(600, 0.1, 'sine', 0.05); setTimeout(() => beep(900, 0.15, 'sine', 0.05), 110);
+  saveGame();
 }
 
 // ============================================================ multiplayer
@@ -1652,8 +2781,20 @@ function ensureRemoteHero(id) {
   plate.className = 'plate';
   plate.innerHTML = `<div class="pname" style="color:#7fd0ff"></div>`;
   $('plates').appendChild(plate);
-  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null };
+  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null, actor: null };
   remoteHeroes.set(id, r);
+  // modelo GLTF animado — o mesmo Knight do herói local (cacheado, então é barato)
+  loadGLTF('/models/characters/Knight_Male.gltf').then((gltf) => {
+    const scale = HERO_H / Actor.height(gltf);
+    r.actor = new Actor(gltf, { scale });
+    const keep = new Set();               // mantém halo/chifres da moralidade
+    if (r.model.halo) keep.add(r.model.halo);
+    if (r.model.horns) r.model.horns.traverse((o) => keep.add(o));
+    r.model.group.traverse((o) => { if (o.isMesh && !keep.has(o)) o.visible = false; });
+    r.model.group.add(r.actor.wrapper);
+    r.actor.setBase(['Idle']);
+    r.wpnKey = null;                       // força re-encaixe da arma no osso
+  }).catch(() => { /* mantém procedural */ });
   return r;
 }
 
@@ -1674,29 +2815,36 @@ function updateRemoteHeroes(dt) {
     r.model.group.rotation.y = r.ry;
     r.model.halo.visible = !!s.halo;
     r.model.horns.visible = !!s.horns;
-    // arma e físico dos outros heróis também aparecem
+    // arma dos outros heróis (no osso se GLTF, senão no mount procedural)
     if (r.wpnKey !== s.wpn) {
       r.wpnKey = s.wpn;
-      r.model.weaponMount.clear();
-      r.model.weaponMount.add(makeWeaponModel(s.wpn));
+      if (r.actor) attachWeaponToActor(r.actor, s.wpn, WEAPONS[s.wpn]?.kind === 'bow');
+      else mountWeapon(r.model, s.wpn);
     }
-    const armorSig = `${s.aHead}|${s.aChest}|${s.aLegs}|${s.aBoots}`;
-    if (r.armorSig !== armorSig) {
-      r.armorSig = armorSig;
-      applyArmorTo(r.model, { head: s.aHead || undefined, chest: s.aChest || undefined, legs: s.aLegs || undefined, boots: s.aBoots || undefined });
+    if (r.actor) {
+      // modelo GLTF animado (idle/walk/run) — igual ao herói local
+      r.actor.setBase(s.moving ? ['Run', 'Walk'] : ['Idle']);
+      r.actor.update(dt);
+    } else {
+      // fallback procedural: armadura, físico das disciplinas e passada
+      const armorSig = `${s.aHead}|${s.aChest}|${s.aLegs}|${s.aBoots}`;
+      if (r.armorSig !== armorSig) {
+        r.armorSig = armorSig;
+        applyArmorTo(r.model, { head: s.aHead || undefined, chest: s.aChest || undefined, legs: s.aLegs || undefined, boots: s.aBoots || undefined });
+      }
+      const bulk = 1 + Math.min(s.str ?? 0, 12) * 0.045;
+      r.model.shL.scale.setScalar(bulk);
+      r.model.shR.scale.setScalar(bulk);
+      const glow = (s.wil ?? 0) >= 2;
+      for (const tm of r.model.tattooMeshes) tm.visible = glow;
+      r.model.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + (s.wil ?? 0) * 0.18) : 0;
+      if (s.moving) r.walkT += dt * 9; else r.walkT *= 0.8;
+      const sw = Math.sin(r.walkT) * 0.65;
+      r.model.legL.rotation.x = sw;
+      r.model.legR.rotation.x = -sw;
+      r.model.armL.rotation.x = -sw * 0.7;
+      r.model.armR.rotation.x = sw * 0.7;
     }
-    const bulk = 1 + Math.min(s.str ?? 0, 12) * 0.045;
-    r.model.shL.scale.setScalar(bulk);
-    r.model.shR.scale.setScalar(bulk);
-    const glow = (s.wil ?? 0) >= 2;
-    for (const tm of r.model.tattooMeshes) tm.visible = glow;
-    r.model.tattooMat.emissiveIntensity = glow ? Math.min(2.2, 0.4 + (s.wil ?? 0) * 0.18) : 0;
-    if (s.moving) r.walkT += dt * 9; else r.walkT *= 0.8;
-    const sw = Math.sin(r.walkT) * 0.65;
-    r.model.legL.rotation.x = sw;
-    r.model.legR.rotation.x = -sw;
-    r.model.armL.rotation.x = -sw * 0.7;
-    r.model.armR.rotation.x = sw * 0.7;
     r.nameEl.textContent = `${s.name} [${s.lvl}]`;
   }
   // remove quem saiu
@@ -1779,11 +2927,10 @@ function tick() {
     if (player.rollT > 0) {
       // rolamento: dash rápido com i-frames e cambalhota
       player.rollT -= dt;
-      const nx = player.pos.x + player.rollDirX * 17 * dt;
-      const nz = player.pos.z + player.rollDirZ * 17 * dt;
-      if (terrainHeight(nx, nz) > LAKE.waterY - 0.35 && Math.hypot(nx, nz) < WORLD_R) {
-        player.pos.x = nx; player.pos.z = nz;
-      }
+      movePlayerTo(
+        player.pos.x + player.rollDirX * 17 * dt,
+        player.pos.z + player.rollDirZ * 17 * dt
+      );
       heroModel.group.rotation.y = Math.atan2(player.rollDirX, player.rollDirZ);
       heroModel.group.rotation.x = (1 - player.rollT / 0.35) * Math.PI * 2;
       if (player.rollT <= 0) heroModel.group.rotation.x = 0;
@@ -1791,18 +2938,21 @@ function tick() {
       mx /= ml; mz /= ml;
       player.lastDirX = mx; player.lastDirZ = mz;
       const speed = 9;
-      const nx = player.pos.x + mx * speed * dt;
-      const nz = player.pos.z + mz * speed * dt;
-      // block deep water & world edge
-      if (terrainHeight(nx, nz) > LAKE.waterY - 0.35 && Math.hypot(nx, nz) < WORLD_R) {
-        player.pos.x = nx; player.pos.z = nz;
-      }
+      movePlayerTo(player.pos.x + mx * speed * dt, player.pos.z + mz * speed * dt);
       heroModel.group.rotation.y = Math.atan2(mx, mz);
       player.walkT += dt * 9;
     } else {
       player.walkT *= 0.8;
     }
     player.moving = ml > 0 || player.rollT > 0;
+    // passos por superfície (o pé no chão dita o som)
+    if (ml > 0 && player.onGround) {
+      let surface = 'grass';
+      const nearSeaD = Math.hypot(player.pos.x - SEA.x, player.pos.z - SEA.z);
+      if (nearSeaD < SEA.r + SEA.shore) surface = 'sand';
+      else if (Math.hypot(player.pos.x - 240, player.pos.z - 40) < 12) surface = 'wood'; // píer
+      footstep(surface, true);
+    }
     const groundY = terrainHeight(player.pos.x, player.pos.z);
     if (keys.Space && player.onGround) { player.vy = 8.5; player.onGround = false; }
     if (!player.onGround) {
@@ -1815,20 +2965,24 @@ function tick() {
   }
   heroModel.group.position.copy(player.pos);
 
-  // hero animation
+  // hero animation — rising edges de ataque/rolamento para disparar as animações
+  const swingRose = player.swingT > heroAnim.lastSwing + 0.001;
+  const rollRose = player.rollT > heroAnim.lastRoll + 0.001;
   const swing = Math.sin(player.walkT) * 0.65;
-  heroModel.legL.rotation.x = swing;
-  heroModel.legR.rotation.x = -swing;
-  heroModel.armL.rotation.x = -swing * 0.7;
-  if (player.blocking) {
-    heroModel.armR.rotation.x = -1.5; // arma erguida em guarda
-  } else if (player.swingT > 0) {
-    player.swingT -= dt;
-    heroModel.armR.rotation.x = -2.4 * (player.swingT / 0.35);
+  if (player.swingT > 0) player.swingT = Math.max(0, player.swingT - dt);
+  if (heroActor) {
+    driveHeroActor(dt, swingRose, rollRose);
   } else {
-    heroModel.armR.rotation.x = swing * 0.7;
+    heroModel.legL.rotation.x = swing;
+    heroModel.legR.rotation.x = -swing;
+    heroModel.armL.rotation.x = -swing * 0.7;
+    if (player.blocking) heroModel.armR.rotation.x = -1.5;
+    else if (player.swingT > 0) heroModel.armR.rotation.x = -2.4 * (player.swingT / 0.35);
+    else heroModel.armR.rotation.x = swing * 0.7;
+    heroModel.cape.rotation.x = 0.15 + Math.abs(swing) * 0.35 + Math.sin(time * 2) * 0.05;
   }
-  heroModel.cape.rotation.x = 0.15 + Math.abs(swing) * 0.35 + Math.sin(time * 2) * 0.05;
+  heroAnim.lastSwing = player.swingT;
+  heroAnim.lastRoll = player.rollT;
   if (heroModel.halo.visible) heroModel.halo.rotation.z = time * 1.5;
 
   // ---------- timers / regen ----------
@@ -1836,6 +2990,8 @@ function tick() {
     player.will = Math.min(player.maxWill, player.will + 4 * (hasTalent('serenidade') ? 1.5 : 1) * dt);
     player.stam = Math.min(player.maxStam, player.stam + stamRegen() * dt);
     if (time - player.lastCombat > 5) player.hp = Math.min(player.maxHp, player.hp + 3 * dt);
+    // ficha criminal esfria com o tempo longe de novos crimes (a lei esquece devagar)
+    if (player.bounty > 0 && time - player.lastCrime > 12) player.bounty = Math.max(0, player.bounty - 1.5 * dt);
   }
   if (player.invulnT > 0) player.invulnT -= dt;
   gcd = Math.max(0, gcd - dt);
@@ -1846,18 +3002,50 @@ function tick() {
 
   // ---------- world / entities ----------
   if (net.connected && net.serverDayT !== null) SKY.dayT = net.serverDayT; // hora do mundo é do servidor
-  updateSky(started ? dt : dt * 0.3, player.pos);
+  updateSky(started ? dt : dt * 0.3, player.pos, weather.rainF);
+  updateColorGrade(dt, player.pos);
   updateWorld(time, dt, player.pos);
+  // ambiente sonoro: pássaros/grilos pela hora, ondas perto do mar
+  {
+    const seaD = Math.hypot(player.pos.x - SEA.x, player.pos.z - SEA.z);
+    const nearSea = clamp(1 - (seaD - (SEA.r - 20)) / 90, 0, 1);
+    setAmbient(SKY.nightF, nearSea);
+  }
   if (started) {
     if (!net.connected) {
-      localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead }], SKY.nightF);
+      localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead, wanted: isWanted() }], SKY.nightF);
       combatLocal.update(dt);
     }
     syncEnemies(dt);
     processSimEvents();
     for (const c of drainChat()) addChatLine(c.name, c.text, c.pid === 0);
     for (const c of chickens) updateChicken(c, dt);
-    for (const n of npcs) updateNpc(n, dt);
+    for (const n of npcs) {
+      const px = n.pos.x, pz = n.pos.z;
+      updateNpc(n, dt);
+      if (n.actor) {
+        const moved = Math.hypot(n.pos.x - px, n.pos.z - pz) > 0.004;
+        n.actor.setBase(moved ? (n.fleeT > 0 ? ['Run', 'Walk'] : ['Walk']) : ['Idle']);
+        n.actor.update(dt);
+      }
+    }
+    updateDog(dt);
+    updateFauna(dt);
+    updateFishing(dt);
+    // música adaptativa: combate quando algum inimigo está caçando você por perto
+    let threat = false;
+    for (const e of enemies) {
+      if ((e.state === 'chase' || e.state === 'attack' || e.state === 'leap') && e.pos.distanceTo(player.pos) < 24) { threat = true; break; }
+    }
+    setCombatMusic(threat ? 1 : 0);
+    combatThreat = threat || _dbgCombat; // grade de combate (Fase 35) — lido no updateColorGrade do próximo frame
+    if (forSaleSign) forSaleSign.visible = !player.ownedHouse;
+    for (const node of gatherables) {
+      if (node.cooldown > 0) {
+        node.cooldown -= dt;
+        if (node.cooldown <= 0) node.model.visible = true; // recresce
+      }
+    }
     guildmasterHints(dt);
     updateOrbs(dt);
     updateRemoteHeroes(dt);
@@ -1926,6 +3114,10 @@ function tick() {
     $('ptitle').textContent = playerTitle();
     $('xpfill').style.width = `${(player.xp / xpToNext(player.level)) * 100}%`;
     $('goldTxt').textContent = player.gold;
+    if (player.bounty > 0) {
+      $('wantedBadge').style.display = 'block';
+      $('wantedStars').textContent = '★'.repeat(Math.min(5, Math.ceil(player.bounty / 20)));
+    } else $('wantedBadge').style.display = 'none';
     $('cntHp').textContent = player.potions.hp;
     $('cntWill').textContent = player.potions.will;
     if (target) {
@@ -2016,14 +3208,18 @@ addEventListener('beforeunload', saveGame);
 
 // debug / experimental hooks
 window.FABLE = {
-  player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
-  gainDiscXP, addItem, updateHeroBody, learnTalent,
+  player, quests, enemies, npcs, chickens, fauna, SKY, net, remoteHeroes, localSim, combatLocal,
+  gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate,
+  gatherables, FORGE, CAULDRON, dog, digSpots,
+  get heroActor() { return heroActor; }, heroModel,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },
   save: saveGame, load: loadGame,
-  startGame,
+  startGame, gtao, godrayUniforms, smaa, sharpen,
+  setScene: (s) => { inCave = s === 'cave'; _dbgCombat = s === 'combat'; }, // debug do grade por cena (Fase 35)
 };
 
 updateHeroBody(); // arma inicial na mão + visual das disciplinas
+updateDogAppearance();
 animate();

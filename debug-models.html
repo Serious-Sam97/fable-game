@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Fable — Bancada de Calibração de Modelos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #202830; color: #e8d5a0; font-family: monospace; }
+  #dbg { display: block; }
+  #hud { position: fixed; top: 8px; left: 8px; z-index: 10; font-size: 12px; line-height: 1.5;
+    background: rgba(0,0,0,.6); padding: 8px 12px; border: 1px solid #8a6d2f; border-radius: 4px; max-width: 46vw; }
+  #hud b { color: #e9c96a; }
+  .row { white-space: pre; }
+  canvas#game { display: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<canvas id="dbg"></canvas>
+<div id="hud">carregando…</div>
+<script type="module" src="/src/client/debug-models.ts"></script>
+</body>
+</html>

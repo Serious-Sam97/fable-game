@@ -148,6 +148,8 @@ wss.on('connection', (ws, req) => {
       case 'surrender': sim.surrenderLeader(); break;
       case 'leaderResolve': sim.resolveLeader(!!m.spare, id); break;
       case 'spawnBalverine': sim.spawnBalverine(); break;
+      case 'spawnShadowKnight': sim.spawnShadowKnight(); break;
+      case 'spawnMalachi': sim.spawnMalachi(); break;
     }
   });
 
@@ -170,7 +172,7 @@ setInterval(() => {
   const nightF = smoothstep(0.02, 0.28, -Math.sin(dayT * Math.PI * 2));
   const views = [];
   for (const [pid, p] of players) {
-    if (p.state) views.push({ id: pid, x: p.state.x, z: p.state.z, dead: !!p.state.dead });
+    if (p.state) views.push({ id: pid, x: p.state.x, z: p.state.z, dead: !!p.state.dead, wanted: !!p.state.wanted });
   }
   sim.update(dt, views, nightF);
   combat.update(dt);

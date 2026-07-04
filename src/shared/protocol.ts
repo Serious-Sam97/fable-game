@@ -37,6 +37,7 @@ export interface PlayerState {
   aChest: string;
   aLegs: string;
   aBoots: string;
+  wanted: boolean;   // procurado — guardas o perseguem
 }
 
 export const CHAT_MAX = 200;
@@ -53,7 +54,9 @@ export type ClientMsg =
   | { t: 'chat'; text: string }
   | { t: 'surrender' }
   | { t: 'leaderResolve'; spare: boolean }
-  | { t: 'spawnBalverine' };
+  | { t: 'spawnBalverine' }
+  | { t: 'spawnShadowKnight' }
+  | { t: 'spawnMalachi' };
 
 export type ServerMsg =
   | { t: 'welcome'; id: number }

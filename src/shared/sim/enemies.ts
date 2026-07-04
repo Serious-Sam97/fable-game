@@ -2,13 +2,14 @@
 // e no cliente como fallback solo. Sem Three.js, sem DOM: só números e eventos.
 import { ENEMY_DEFS } from '../defs/enemies';
 import { rnd } from '../math';
-import { BANDIT_CAMP, ORCHARD, DARK_FOREST } from '../terrain';
+import { BANDIT_CAMP, ORCHARD, DARK_FOREST, CRAB_BEACH, CAVE, RITUAL } from '../terrain';
 
 export interface SimPlayerView {
   id: number;
   x: number;
   z: number;
   dead: boolean;
+  wanted?: boolean; // procurado — guardas o perseguem
 }
 
 export type SimEvent =
@@ -26,7 +27,8 @@ export type SimEvent =
   // efeitos visuais de magia — emitidos pelo CombatSim, renderizados por todos os clientes
   | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
   | { t: 'boom'; x: number; z: number }
-  | { t: 'shock'; x: number; z: number };
+  | { t: 'shock'; x: number; z: number }
+  | { t: 'ecombo'; id: number; pid: number };  // 3º golpe do combo conectou
 
 export type EnemyState = 'idle' | 'chase' | 'attack' | 'return' | 'dead' | 'leap' | 'surrender' | 'flee';
 
@@ -47,6 +49,11 @@ export interface SimEnemy {
   targetPid: number | null;
   isLeader: boolean;
   stunT: number;
+  // queimadura (Bola de Fogo)
+  burnT: number;
+  burnTick: number;
+  burnDmg: number;
+  burnPid: number;
 }
 
 /** snapshot enxuto enviado aos clientes (e usado pelo view local no modo solo) */
@@ -95,6 +102,20 @@ export class EnemySim {
     }
     this.spawn('lobo_alfa', 95, 55);
     this.spawn('troll', 105, -35); // colinas a leste do lago
+    // guardas patrulhando as duas cidades (só perseguem procurados)
+    this.spawn('guarda', 4, 2);
+    this.spawn('guarda', -6, -4);
+    this.spawn('guarda', 220, 42); // Porto Bruma
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      this.spawn('caranguejo', CRAB_BEACH.x + Math.cos(a) * (4 + rnd(i, 330) * 10), CRAB_BEACH.z + Math.sin(a) * (4 + rnd(i, 331) * 8));
+    }
+    // Caverna dos Hobbes: guarda-costas + o Capitão que guarda a Chave de Prata
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      this.spawn('hobbe', CAVE.x + Math.cos(a) * (7 + rnd(i, 340) * 6), CAVE.z + Math.sin(a) * (7 + rnd(i, 341) * 6));
+    }
+    this.spawn('hobbe_chefe', CAVE.x, CAVE.z - 8);
   }
 
   spawn(type: string, x: number, z: number, isLeader = false): SimEnemy {
@@ -111,6 +132,7 @@ export class EnemySim {
       leapCd: 0, leapT: 0,
       leapFromX: 0, leapFromZ: 0, leapToX: 0, leapToZ: 0,
       targetPid: null, isLeader, stunT: 0,
+      burnT: 0, burnTick: 0, burnDmg: 0, burnPid: 0,
     };
     this.enemies.set(e.id, e);
     return e;
@@ -119,6 +141,16 @@ export class EnemySim {
   spawnBalverine() {
     for (const e of this.enemies.values()) if (e.type === 'balverine' && e.state !== 'dead') return;
     this.spawn('balverine', DARK_FOREST.x, DARK_FOREST.z + 12);
+  }
+
+  spawnShadowKnight() {
+    for (const e of this.enemies.values()) if (e.type === 'cavaleiro_sombrio' && e.state !== 'dead') return;
+    this.spawn('cavaleiro_sombrio', DARK_FOREST.x + 6, DARK_FOREST.z - 6);
+  }
+
+  spawnMalachi() {
+    for (const e of this.enemies.values()) if (e.type === 'malachi' && e.state !== 'dead') return;
+    this.spawn('malachi', RITUAL.x, RITUAL.z);
   }
 
   getLeader(): SimEnemy | undefined {
@@ -239,6 +271,16 @@ export class EnemySim {
         }
         continue;
       }
+      // queimadura: dano residual por segundo, creditado a quem lançou
+      if (e.burnT > 0) {
+        e.burnT -= dt;
+        e.burnTick -= dt;
+        if (e.burnTick <= 0) {
+          e.burnTick = 1;
+          this.applyDamage(e.id, e.burnDmg, e.burnPid, 'magic', false);
+          if (e.state === 'dead') continue; // queimou até morrer
+        }
+      }
       if (e.state === 'surrender') {
         // ajoelhado, encara o herói vivo mais próximo
         const near = this.nearest(players, e.x, e.z);
@@ -293,7 +335,8 @@ export class EnemySim {
       }
 
       if (e.state === 'idle') {
-        const near = this.nearest(players, e.x, e.z);
+        // guardas só perseguem jogadores PROCURADOS; os demais, o jogador mais próximo
+        const near = def.guard ? this.nearestWanted(players, e.x, e.z) : this.nearest(players, e.x, e.z);
         if (near && Math.hypot(near.x - e.x, near.z - e.z) < aggroR) {
           e.state = 'chase';
           e.targetPid = near.id;
@@ -315,7 +358,9 @@ export class EnemySim {
           this.moveToward(e, e.wanderX, e.wanderZ, def.speed * 0.35, eDt);
         }
       } else if (e.state === 'chase' || e.state === 'attack') {
-        if (!tgt || dHome > 55) {
+        // guarda desiste se o alvo deixou de ser procurado (pagou a ficha / se acalmou)
+        const guardGaveUp = def.guard && (!tgt || !tgt.wanted);
+        if (!tgt || dHome > 60 || guardGaveUp) {
           e.state = 'return';
           e.targetPid = null;
           e.hp = e.maxHp;
@@ -446,6 +491,16 @@ export class EnemySim {
     let best: SimPlayerView | null = null, bd = Infinity;
     for (const p of players) {
       if (p.dead) continue;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  }
+
+  private nearestWanted(players: SimPlayerView[], x: number, z: number): SimPlayerView | null {
+    let best: SimPlayerView | null = null, bd = Infinity;
+    for (const p of players) {
+      if (p.dead || !p.wanted) continue;
       const d = Math.hypot(p.x - x, p.z - z);
       if (d < bd) { bd = d; best = p; }
     }

@@ -20,6 +20,7 @@ export class CombatSim {
   private cds = new Map<number, Map<string, number>>();       // pid → ability → pronto em t
   private lastCast = new Map<number, number>();
   private mult = new Map<number, { n: number; last: number }>();
+  private combo = new Map<number, { n: number; last: number }>();
   private pending: Array<{ at: number; run: () => void }> = [];
   private t = 0;
 
@@ -69,7 +70,21 @@ export class CombatSim {
 
     switch (key) {
       case 'golpe': {
-        this.hit(c, 'golpe', tgt!.id);
+        // combo: 3 golpes encadeados em 2.5s — o terceiro bate 30% mais forte e empurra
+        let cb = this.combo.get(c.id);
+        if (!cb || this.t - cb.last > 2.5) cb = { n: 0, last: 0 };
+        cb.n++;
+        cb.last = this.t;
+        let scale = cb.n === 2 ? 1.1 : 1;
+        if (cb.n >= 3) {
+          scale = 1.3;
+          cb.n = 0;
+          this.sim.events.push({ t: 'ecombo', id: tgt!.id, pid: c.id });
+          const d = Math.hypot(tgt!.x - c.x, tgt!.z - c.z) || 1;
+          this.sim.knock(tgt!.id, ((tgt!.x - c.x) / d) * 8, ((tgt!.z - c.z) / d) * 8);
+        }
+        this.combo.set(c.id, cb);
+        this.hit(c, 'golpe', tgt!.id, scale);
         break;
       }
       case 'bola': {
@@ -81,6 +96,13 @@ export class CombatSim {
           if (!this.targetable(e)) return;
           this.sim.events.push({ t: 'boom', x: e.x, z: e.z });
           this.hit(c, 'bola', id);
+          // queimadura: 3s de dano residual escalando com Vontade
+          if (e.state !== 'dead') {
+            e.burnT = 3;
+            e.burnTick = 1;
+            e.burnDmg = Math.max(2, Math.round(2 + c.wil * 0.4));
+            e.burnPid = c.id;
+          }
         } });
         break;
       }
