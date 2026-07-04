@@ -2,7 +2,28 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ============================================================ cel-shading (look Fable)
+// rampa de luz suave: sombras ERGUIDAS (nunca preto) e bandas macias — estilo livro de contos
+function makeToonRamp() {
+  const steps = [0.5, 0.68, 0.84, 1.0]; // luminância das bandas
+  const data = new Uint8Array(steps.length * 4);
+  for (let i = 0; i < steps.length; i++) {
+    const v = Math.round(steps[i] * 255);
+    data[i * 4] = v; data[i * 4 + 1] = v; data[i * 4 + 2] = v; data[i * 4 + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, steps.length, 1, THREE.RGBAFormat);
+  tex.magFilter = tex.minFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+export const toonRamp = makeToonRamp();
+/** material cel-shaded — substitui Lambert nos objetos do mundo/personagens */
+export function toonMaterial(color, opts = {}) {
+  return new THREE.MeshToonMaterial({ color, gradientMap: toonRamp, ...opts });
+}
 
 // ============================================================ renderer / scene
 export const canvas = document.getElementById('game');
@@ -22,8 +43,40 @@ export const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 
 
 export const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-export const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.7, 0.82);
+export const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.4, 0.7, 0.85);
 composer.addPass(bloom);
+
+// color grade estilo Fable: leve calor dourado, contraste/saturação suaves e vinheta
+export const gradeUniforms = {
+  tDiffuse: { value: null },
+  uWarm: { value: 0.05 },       // calor sutil — o entardecer já é quente por si
+  uSat: { value: 1.1 },         // realça as cores
+  uContrast: { value: 1.05 },
+  uVignette: { value: 0.26 },
+};
+const GradeShader = {
+  uniforms: gradeUniforms,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tDiffuse;
+    uniform float uWarm; uniform float uSat; uniform float uContrast; uniform float uVignette;
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      // saturação
+      float l = dot(c, vec3(0.299, 0.587, 0.114));
+      c = mix(vec3(l), c, uSat);
+      // contraste em torno de 0.5
+      c = (c - 0.5) * uContrast + 0.5;
+      // calor dourado (sobe vermelho/verde, baixa azul de leve)
+      c += vec3(uWarm, uWarm*0.6, -uWarm*0.5);
+      // vinheta suave
+      float d = distance(vUv, vec2(0.5));
+      c *= 1.0 - smoothstep(0.5, 0.95, d) * uVignette;
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`,
+};
+export const gradePass = new ShaderPass(GradeShader);
+composer.addPass(gradePass);
 composer.addPass(new OutputPass());
 
 addEventListener('resize', () => {
@@ -34,7 +87,8 @@ addEventListener('resize', () => {
 });
 
 // ============================================================ lights
-export const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x5a7a3a, 0.9);
+// céu levemente mais quente + bounce verde-dourado do chão (sombras erguidas, look Fable)
+export const hemi = new THREE.HemisphereLight(0xd6ecff, 0x6e8a4a, 1.05);
 scene.add(hemi);
 
 export const sun = new THREE.DirectionalLight(0xfff2d0, 1.7);
@@ -48,6 +102,11 @@ scene.add(sun); scene.add(sun.target);
 
 export const moon = new THREE.DirectionalLight(0x7a90d8, 0);
 scene.add(moon); scene.add(moon.target);
+
+// luz de preenchimento quente vinda de trás/lado — cria o "rim" dourado de Fable
+export const rimLight = new THREE.DirectionalLight(0xffd9a0, 0.5);
+rimLight.position.set(-40, 30, -60);
+scene.add(rimLight); scene.add(rimLight.target);
 
 // ============================================================ helpers
 // matemática vive em shared/ (mesmo código no servidor); re-exportada para o cliente
@@ -85,6 +144,11 @@ export function updateSky(dt, playerPos, dim = 0) {
   moon.position.set(playerPos.x - az * 100, -sunAlt * 120, playerPos.z - 40);
   moon.target.position.copy(playerPos);
   moon.intensity = 0.45 * SKY.nightF;
+
+  // rim quente segue o jogador — forte de dia (glow dourado), some à noite
+  rimLight.position.set(playerPos.x - 50, 34, playerPos.z - 60);
+  rimLight.target.position.copy(playerPos);
+  rimLight.intensity = 0.55 * clamp(sunAlt * 2 + 0.2, 0, 1) * (1 - dim * 0.5);
 
   if (sunAlt > 0) skyCol.lerpColors(cDusk, cDay, smoothstep(0, 0.42, sunAlt));
   else skyCol.lerpColors(cDusk, cNight, smoothstep(0, 0.3, -sunAlt));

@@ -1,18 +1,20 @@
 import * as THREE from 'three';
+import { toonRamp } from './core';
 
 // ============================================================================
 // Modelos orgânicos estilo Fable — cápsulas, esferas e juntas em vez de caixas.
 // Todos os humanoides saem de makeHumanoid(); braços/pernas são GRUPOS com pivô
-// no ombro/quadril (o jogo anima rotation.x deles).
+// no ombro/quadril (o jogo anima rotation.x deles). Materiais são cel-shaded (toon).
 // ============================================================================
 
 function matMaker(mats) {
   return (color, opts = {}) => {
-    const m = new THREE.MeshLambertMaterial({ color, ...opts });
+    const m = new THREE.MeshToonMaterial({ color, gradientMap: toonRamp, ...opts });
     mats.push(m);
     return m;
   };
 }
+const toon = (color, opts = {}) => new THREE.MeshToonMaterial({ color, gradientMap: toonRamp, ...opts });
 function shadows(g) { g.traverse(o => { if (o.isMesh) o.castShadow = true; }); }
 
 const basic = (color) => new THREE.MeshBasicMaterial({ color });
@@ -157,7 +159,7 @@ export function makeHero() {
   buckle.position.set(0, 1.08, 0.3);
   // abas de túnica de couro (frente/trás)
   const flapGeo = new THREE.CylinderGeometry(0.19, 0.26, 0.42, 10, 1, true, -Math.PI / 3, Math.PI / 1.5);
-  const flapF = new THREE.Mesh(flapGeo, new THREE.MeshLambertMaterial({ color: 0x4a3520, side: THREE.DoubleSide }));
+  const flapF = new THREE.Mesh(flapGeo, new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0x4a3520, side: THREE.DoubleSide }));
   mats.push(flapF.material);
   flapF.position.set(0, 0.82, 0.1);
   const flapB = flapF.clone();
@@ -167,7 +169,7 @@ export function makeHero() {
 
   // capa
   const capeGeo = new THREE.CylinderGeometry(0.34, 0.52, 1.35, 12, 1, true, Math.PI * 0.62, Math.PI * 0.76);
-  const cape = new THREE.Mesh(capeGeo, new THREE.MeshLambertMaterial({ color: 0x6a1f14, side: THREE.DoubleSide }));
+  const cape = new THREE.Mesh(capeGeo, new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0x6a1f14, side: THREE.DoubleSide }));
   mats.push(cape.material);
   cape.geometry.translate(0, -0.675, 0);
   cape.position.set(0, 1.95, -0.06);
@@ -179,7 +181,7 @@ export function makeHero() {
   h.armR.add(weaponMount);
 
   // tatuagens arcanas de Vontade: anéis luminosos nos braços (bloom)
-  const tattooMat = new THREE.MeshLambertMaterial({ color: 0x16243e, emissive: 0x3a8aff, emissiveIntensity: 0 });
+  const tattooMat = new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0x16243e, emissive: 0x3a8aff, emissiveIntensity: 0 });
   const tattooMeshes = [];
   for (const arm of [h.armL, h.armR]) {
     for (const y of [-0.16, -0.28, -0.58]) {
@@ -204,7 +206,7 @@ export function makeHero() {
   halo.position.y = 2.95;
   halo.visible = false;
   const horns = new THREE.Group();
-  const hornMat = new THREE.MeshLambertMaterial({ color: 0x5a1010, emissive: 0x300505 });
+  const hornMat = new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0x5a1010, emissive: 0x300505 });
   for (const s of [-1, 1]) {
     const horn = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.28, 8), hornMat);
     horn.position.set(s * 0.16, 2.6, 0);
@@ -251,8 +253,8 @@ export function mountWeapon(model, key) {
 export function applyArmorTo(model, slots) {
   const m = model.armorMounts;
   for (const k of Object.keys(m)) m[k].clear();
-  const mat = (iron) => new THREE.MeshLambertMaterial({ color: iron ? 0x9aa2ac : 0x6a4a2a });
-  const gold = () => new THREE.MeshLambertMaterial({ color: 0xc8a24b });
+  const mat = (iron) => new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: iron ? 0x9aa2ac : 0x6a4a2a });
+  const gold = () => new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0xc8a24b });
 
   if (slots.head) {
     const iron = slots.head.startsWith('ferro');
@@ -313,7 +315,7 @@ export function makeVillager({ robe = 0x2a4a7a, skin = 0xd8a878, hair = 0x888888
     const t = i / 6;
     pts.push(new THREE.Vector2(0.34 + t * 0.2, 1.06 - t * 0.98));
   }
-  const skirt = new THREE.Mesh(new THREE.LatheGeometry(pts, 14), new THREE.MeshLambertMaterial({ color: robe, side: THREE.DoubleSide }));
+  const skirt = new THREE.Mesh(new THREE.LatheGeometry(pts, 14), new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: robe, side: THREE.DoubleSide }));
   mats.push(skirt.material);
   g.add(skirt);
 
@@ -486,7 +488,7 @@ export function makeHobbe({ shaman = false, captain = false } = {}) {
       spike.position.set(Math.cos(a) * 0.32, 0.55, Math.sin(a) * 0.32);
       head.add(spike);
     }
-    const cape = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.15), new THREE.MeshLambertMaterial({ color: 0x6a1a2a, side: THREE.DoubleSide }));
+    const cape = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.15), new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0x6a1a2a, side: THREE.DoubleSide }));
     cape.position.set(0, 1.0, -0.34); cape.geometry.translate(0, -0.45, 0);
     g.add(cape);
     g.scale.setScalar(1.28);
@@ -557,7 +559,7 @@ export function makeMalachi() {
     h.head.add(horn);
   }
   // manto esvoaçante
-  const cloak = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.7), new THREE.MeshLambertMaterial({ color: 0x2a1030, side: THREE.DoubleSide }));
+  const cloak = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.7), new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: 0x2a1030, side: THREE.DoubleSide }));
   cloak.position.set(0, 1.5, -0.42); cloak.geometry.translate(0, -0.6, 0);
   const cloakInner = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.5), new THREE.MeshBasicMaterial({ color: 0x6a1aa0, side: THREE.DoubleSide }));
   cloakInner.position.set(0, 1.5, -0.4); cloakInner.geometry.translate(0, -0.55, 0);
@@ -942,7 +944,7 @@ export function makeChicken() {
 // ---------------------------------------------------------------- weapon models
 export function makeWeaponModel(key) {
   const g = new THREE.Group();
-  const M = (c, opts = {}) => new THREE.MeshLambertMaterial({ color: c, ...opts });
+  const M = (c, opts = {}) => new THREE.MeshToonMaterial({ gradientMap: toonRamp, color: c, ...opts });
   const grip = () => {
     const m = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.036, 0.2, 8), M(0x3a2a12));
     m.position.y = -0.08;

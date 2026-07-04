@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core';
+import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY, toonMaterial, toonRamp } from './core';
 import {
   WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE, RITUAL,
   terrainHeight, distToPath,
@@ -40,7 +40,8 @@ export const chests = [];
 export const MAP_FEATURES = [];   // minimap statics {x, z, color, r}
 export const colliders = [];      // cilindros de colisão {x, z, r} — casas, árvores, pedras…
 
-function lambert(color, opts = {}) { return new THREE.MeshLambertMaterial({ color, ...opts }); }
+// cel-shaded (look Fable) — antes era Lambert; toon dá bandas suaves de luz
+function lambert(color, opts = {}) { return toonMaterial(color, opts); }
 
 // ---- vento: uniforme compartilhado, atualizado por frame ----
 const windUniform = { value: 0 };
@@ -112,7 +113,7 @@ function buildGround() {
   }
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geo.computeVertexNormals();
-  const ground = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const ground = new THREE.Mesh(geo, new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonRamp }));
   ground.receiveShadow = true;
   scene.add(ground);
 }
@@ -1128,7 +1129,25 @@ function buildChests() {
 }
 
 // ------------------------------------------------ ambient life
+let motes;
 function buildAmbientLife() {
+  // poeira/pólen dourado flutuando ao sol (partículas de atmosfera — magia de Fable)
+  {
+    const N = 240;
+    const pts = [], seeds = [];
+    for (let i = 0; i < N; i++) {
+      pts.push((rnd(i, 130) - 0.5) * 90, rnd(i, 131) * 10, (rnd(i, 132) - 0.5) * 90);
+      seeds.push(rnd(i, 133) * 12);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    motes = new THREE.Points(geo, new THREE.PointsMaterial({
+      color: 0xffe9b0, size: 0.09, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+    }));
+    motes.userData.base = pts.slice();
+    motes.userData.seeds = seeds;
+    scene.add(motes);
+  }
   // fireflies
   {
     const geo = new THREE.BufferGeometry();
@@ -1248,6 +1267,20 @@ export function updateWorld(time, dt, playerPos) {
   for (const c of clouds) {
     c.position.x += dt * 1.2;
     if (c.position.x > playerPos.x + 280) c.position.x = playerPos.x - 280;
+  }
+  // poeira dourada deriva com o vento e segue o jogador; some à noite
+  if (motes) {
+    motes.material.opacity = 0.5 * (1 - nf);
+    motes.position.set(Math.floor(playerPos.x / 90) * 90, 0, Math.floor(playerPos.z / 90) * 90);
+    const pos = motes.geometry.attributes.position;
+    const base = motes.userData.base, seeds = motes.userData.seeds;
+    for (let i = 0; i < seeds.length; i++) {
+      const s = seeds[i];
+      pos.setX(i, base[i * 3] + Math.sin(time * 0.25 + s) * 3 + time * 0.4 % 90);
+      pos.setY(i, base[i * 3 + 1] + Math.sin(time * 0.4 + s * 2) * 1.2);
+      pos.setZ(i, base[i * 3 + 2] + Math.cos(time * 0.2 + s) * 3);
+    }
+    pos.needsUpdate = true;
   }
   // água (shader): tempo, direção do sol e fator de noite
   waterUniforms.uTime.value = time;
