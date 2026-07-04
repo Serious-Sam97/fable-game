@@ -1,16 +1,16 @@
 import * as THREE from 'three';
 import {
-  canvas, scene, camera, composer, gtao, bloom, sun, hemi, godrayUniforms, smaa, sharpen, dofUniforms, SKY, updateSky, skyHour, gradeUniforms,
+  canvas, scene, camera, composer, renderer, gtao, bloom, sun, hemi, godrayUniforms, smaa, sharpen, dofUniforms, SKY, updateSky, skyHour, gradeUniforms,
   beep, noiseBurst, startMusic, toggleMusic, setCombatMusic, startAmbient, setAmbient, footstep, clamp, lerp, rnd,
 } from './core';
 import {
   WORLD_R, WATERS, SEA, terrainHeight, buildWorld, updateWorld, weather,
   chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
-  gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue, biomeGrade,
+  gatherables, FORGE, CAULDRON, RITUAL, spawnHeroStatue, biomeGrade, caveInterior, setCulling, cullStats,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, makeWeaponModel, applyArmorTo, makeTroll, makeCrab,
+  makeBeast, makeBeetle, makeTextSprite, mountWeapon, makeWeaponModel, applyArmorTo, makeTroll, makeCrab,
   makeShadowKnight, makeMalachi, makeDog,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
@@ -18,7 +18,7 @@ import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
 import { WEAPONS, ARMORS, RARITIES, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
-import { loadGLTF, Actor, envUniform } from './assets';
+import { loadGLTF, Actor, envUniform, rimStrengthU, nightDimU, RIM } from './assets';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
 
@@ -65,9 +65,11 @@ function driveHeroActor(dt, swingRose, rollRose) {
     heroAnim.wasDead = false;
     if (swingRose) {
       const bow = equippedStats().kind === 'bow';
-      heroActor.trigger(bow ? ['Shoot_OneHanded', 'Shoot'] : ['SwordSlash', 'Punch'], { speed: 1.5 });
+      // ataque/tiro ADITIVO (Fase 42): braços agem enquanto as pernas seguem andando/correndo
+      heroActor.triggerUpper(bow ? ['Shoot_OneHanded', 'Shoot'] : ['SwordSlash', 'Punch'], { speed: 1.5 });
+      if (!bow) bladeSwoosh(player.pos, heroModel.group.rotation.y); // trilha de lâmina (Fase 43)
     } else if (rollRose) {
-      heroActor.trigger(['Roll'], { speed: 1.3 });
+      heroActor.trigger(['Roll'], { speed: 1.3 }); // rolar é full-body
     }
     heroActor.setBase(player.moving ? ['Run', 'Walk'] : ['Idle']);
   }
@@ -403,19 +405,24 @@ addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x 
 
 const shopsOpen = () => SKY.nightF < 0.55; // lojas fecham à noite
 
-// ============================================================ chickens
+// ============================================================ chickens (modelo GLTF animado)
 const chickens = [];
-for (let i = 0; i < 6; i++) {
-  const x = -8 + rnd(i, 200) * 18, z = -10 + rnd(i, 201) * 20;
-  const model = makeChicken();
-  const y = terrainHeight(x, z);
-  model.group.position.set(x, y, z);
-  scene.add(model.group);
-  chickens.push({
-    model, pos: new THREE.Vector3(x, y, z), home: new THREE.Vector3(x, y, z),
-    state: 'idle', vel: new THREE.Vector3(), spin: 0, wTimer: rnd(i, 202) * 3, walkT: 0,
-  });
-}
+(async () => {
+  let gltf; try { gltf = await loadGLTF('/models/monsters/Blob/glTF/Chicken.gltf'); } catch (e) { return; }
+  const scale = 0.62 / Actor.height(gltf); // galinha baixinha
+  for (let i = 0; i < 6; i++) {
+    const x = -8 + rnd(i, 200) * 18, z = -10 + rnd(i, 201) * 20;
+    const y = terrainHeight(x, z);
+    const actor = new Actor(gltf, { scale, outline: 0.015 });
+    actor.wrapper.position.set(x, y, z);
+    scene.add(actor.wrapper);
+    actor.setBase(['Idle']);
+    chickens.push({
+      actor, pos: new THREE.Vector3(x, y, z), home: new THREE.Vector3(x, y, z),
+      state: 'idle', vel: new THREE.Vector3(), spin: 0, wTimer: rnd(i, 202) * 3, walkT: 0,
+    });
+  }
+})();
 
 // ============================================================ enemies
 const enemies = [];
@@ -520,7 +527,7 @@ function updateFauna(dt) {
       if (ny > 0.3) { f.pos.set(nx, ny, nz); f.ry = Math.atan2(mx, mz); } else f.target = null; // evita entrar na água
     }
     f.actor.wrapper.position.copy(f.pos);
-    f.actor.wrapper.rotation.set(0, f.ry, 0);
+    groundAlign(f.actor.wrapper, f.pos.x, f.pos.z, f.ry); // pés na inclinação (Fase 41)
     f.actor.setBase(f.moving ? f.walk : ['Idle']);
     f.actor.update(dt);
   }
@@ -594,12 +601,12 @@ function syncEnemies(dt) {
       // ---- modelo GLTF animado ----
       const moved = Math.hypot(v.pos.x - v.prevX, v.pos.z - v.prevZ) > 0.02;
       v.actor.wrapper.position.copy(v.pos);
-      v.actor.wrapper.rotation.set(0, v.ry, 0);
+      groundAlign(v.actor.wrapper, v.pos.x, v.pos.z, v.ry); // pés na inclinação (Fase 41)
       if (s.state === 'dead') {
         if (!v.died) { v.actor.trigger(['Death']); v.died = true; }
       } else {
         v.died = false;
-        const moving = moved || s.state === 'chase' || s.state === 'return' || s.state === 'flee';
+        const moving = movingHeld(v, moved, dt) || s.state === 'chase' || s.state === 'return' || s.state === 'flee';
         v.actor.setBase(moving ? v.cfg.walk : ['Idle']);
       }
       v.actor.update(dt);
@@ -716,7 +723,11 @@ function processSimEvents() {
         else floatText(v.pos, ev.amount, mine ? '#ffd24a' : '#9ad0ff', 18);
         for (const m of v.model.mats) m.emissive.setHex(0x661111);
         setTimeout(() => { for (const m of v.model.mats) m.emissive.setHex(0x000000); }, 120);
+        // VFX de impacto (Fase 43): flash + faíscas + sangue na altura do peito do inimigo
+        impactBurst(v.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), ev.crit);
         if (mine) {
+          // hit-stop só no meu golpe corpo-a-corpo (mais forte no crítico)
+          if (ev.src !== 'ranged' && ev.src !== 'magic') hitStopT = Math.max(hitStopT, ev.crit ? 0.08 : 0.05);
           player.lastCombat = time;
           player.mult = Math.min(99, player.mult + 1);
           player.multT = 5;
@@ -731,18 +742,18 @@ function processSimEvents() {
       case 'bolt': {
         const a = new THREE.Vector3(ev.ax, terrainHeight(ev.ax, ev.az) + ev.ay, ev.az);
         const b = new THREE.Vector3(ev.bx, terrainHeight(ev.bx, ev.bz) + ev.by, ev.bz);
-        lightningBolt(a, b);
+        lightningStrike(a, b); // escola RAIO (Fase 44): ramos + faíscas + flash frio
         break;
       }
       case 'boom': {
         const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z) + 1, ev.z);
-        explosion(p);
+        fireBurst(p); // escola FOGO (Fase 44): brasas + luz quente
         beep(100, 0.15, 'sawtooth', 0.05);
         break;
       }
       case 'shock': {
         const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z), ev.z);
-        ringEffect(p, 0xbfe0ff, 9);
+        shockDust(p); // Empurrão (ar/força): anel + poeira
         break;
       }
       case 'eleap':
@@ -795,6 +806,8 @@ let target = null;
 
 // ============================================================ fx / floating text / orbs
 const effects = [];
+let hitStopT = 0; // câmera-lenta breve no acerto (Fase 43)
+let _frameMs = 0; // média móvel do tempo de frame — orçamento monitorado (Fase 47)
 function addEffect(mesh, dur, update) {
   scene.add(mesh);
   effects.push({ mesh, t: 0, dur, update });
@@ -843,6 +856,108 @@ function lightningBolt(from, to) {
   const geo = new THREE.BufferGeometry().setFromPoints(pts);
   const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xbfe0ff, transparent: true, opacity: 1 }));
   addEffect(line, 0.25, (fx, k) => { fx.mesh.material.opacity = 1 - k; });
+}
+
+// ---- VFX de combate (Fase 43) ----
+// jato de partículas balísticas (posição paramétrica em k → não precisa de dt): faíscas + sangue
+const _burstGeo = new THREE.SphereGeometry(1, 5, 4);
+// pool de partículas (Fase 47): malhas reusadas (free-stack O(1)) → ZERO alocação de Mesh/Material
+// por partícula durante combate/magia. Ficam na cena, visible=false quando livres. Update próprio.
+const _partFree = [], _partActive = [];
+function _getPartMesh() {
+  if (_partFree.length) return _partFree.pop();
+  const m = new THREE.Mesh(_burstGeo, new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+  scene.add(m); return m;
+}
+function _particle(pos, color, size, vx, vy, vz, gravity, dur) {
+  const m = _getPartMesh();
+  m.material.color.setHex(color); m.material.opacity = 1;
+  m.position.copy(pos); m.scale.setScalar(size); m.visible = true;
+  _partActive.push({ m, px: pos.x, py: pos.y, pz: pos.z, vx, vy, vz, g: gravity, dur, size, t: 0 });
+}
+function updateParticles(dt) {
+  for (let i = _partActive.length - 1; i >= 0; i--) {
+    const a = _partActive[i]; a.t += dt; const k = a.t / a.dur;
+    if (k >= 1) { a.m.visible = false; _partFree.push(a.m); _partActive.splice(i, 1); continue; }
+    const t = a.t;
+    a.m.position.set(a.px + a.vx * t, a.py + a.vy * t - 0.5 * a.g * t * t, a.pz + a.vz * t);
+    a.m.material.opacity = 1 - k;
+    a.m.scale.setScalar(a.size * (1 - k * 0.6));
+  }
+}
+// impacto de golpe: flash branco + faíscas quentes + sangue estilizado (crimson) esguichando
+function impactBurst(pos, big = false) {
+  // flash de impacto
+  const flash = new THREE.Mesh(_burstGeo, new THREE.MeshBasicMaterial({ color: 0xfff0c0, transparent: true, opacity: 0.95, depthWrite: false }));
+  flash.position.copy(pos); flash.scale.setScalar(0.25);
+  addEffect(flash, 0.12, (fx, k) => { fx.mesh.scale.setScalar(0.25 + k * (big ? 1.1 : 0.7)); fx.mesh.material.opacity = 0.95 * (1 - k); });
+  const nS = big ? 8 : 5, nB = big ? 7 : 5;
+  for (let i = 0; i < nS; i++) { // faíscas
+    const a = Math.random() * 6.28, s = 2.5 + Math.random() * 4;
+    _particle(pos, 0xffd24a, 0.05 + Math.random() * 0.05, Math.cos(a) * s, 3 + Math.random() * 4, Math.sin(a) * s, 12, 0.22 + Math.random() * 0.2);
+  }
+  for (let i = 0; i < nB; i++) { // sangue estilizado
+    const a = Math.random() * 6.28, s = 1.2 + Math.random() * 3;
+    _particle(pos, i % 3 ? 0x9a1414 : 0xc02020, 0.08 + Math.random() * 0.07, Math.cos(a) * s, 2 + Math.random() * 3.5, Math.sin(a) * s, 11, 0.35 + Math.random() * 0.25);
+  }
+}
+// trilha/swoosh de lâmina: crescente claro que varre à frente do herói e some rápido
+const _swooshGeo = new THREE.RingGeometry(1.05, 1.55, 22, 1, Math.PI * 0.12, Math.PI * 0.72);
+function bladeSwoosh(pos, ry) {
+  const m = new THREE.Mesh(_swooshGeo, new THREE.MeshBasicMaterial({ color: 0xeaf2ff, side: THREE.DoubleSide, transparent: true, opacity: 0.65, depthWrite: false }));
+  m.position.copy(pos).add(new THREE.Vector3(Math.sin(ry) * 0.7, 1.35, Math.cos(ry) * 0.7));
+  m.rotation.y = ry;
+  m.rotation.x = -Math.PI / 2 + 0.55; // quase horizontal, levemente erguido (arco do golpe)
+  addEffect(m, 0.2, (fx, k) => {
+    fx.mesh.material.opacity = 0.65 * (1 - k);
+    fx.mesh.rotation.z = -0.6 + k * 1.3; // varre o arco
+    fx.mesh.scale.setScalar(0.85 + k * 0.4);
+  });
+}
+
+// ---- VFX de magia por escola (Fase 44) — cada escola com partículas e LUZ própria ----
+// luz própria do feitiço via POOL fixo (add/remove de PointLight recompila TODOS os shaders da
+// cena → travava ao spammar). O pool fica sempre na cena; só pulsamos intensidade/cor/posição.
+const _spellLights = [];
+// sempre visíveis, intensidade 0 quando ociosas → a contagem de luzes NUNCA muda (sem recompilar)
+for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xffffff, 0, 15); scene.add(l); _spellLights.push({ light: l, t: 1, dur: 1, peak: 0 }); }
+let _slNext = 0;
+function flashLight(pos, color, intensity, dist, dur) {
+  const sl = _spellLights[_slNext]; _slNext = (_slNext + 1) % _spellLights.length;
+  sl.light.position.copy(pos); sl.light.color.setHex(color); sl.light.distance = dist;
+  sl.peak = intensity; sl.t = 0; sl.dur = dur;
+}
+function updateSpellLights(dt) {
+  for (const sl of _spellLights) {
+    if (sl.t >= sl.dur) { if (sl.light.intensity !== 0) sl.light.intensity = 0; continue; }
+    sl.t += dt;
+    const k = sl.t / sl.dur;
+    sl.light.intensity = k >= 1 ? 0 : sl.peak * (1 - k) * (1 - k);
+  }
+}
+// FOGO: núcleo quente que expande e esfria (amarelo→laranja→brasa) + brasas subindo + luz laranja
+function fireBurst(pos) {
+  const core = new THREE.Mesh(_burstGeo, new THREE.MeshBasicMaterial({ color: 0xffe0a0, transparent: true, opacity: 0.95, depthWrite: false }));
+  core.position.copy(pos); core.scale.setScalar(0.5);
+  addEffect(core, 0.38, (fx, k) => {
+    fx.mesh.scale.setScalar(0.5 + k * 3.4);
+    fx.mesh.material.color.setHex(k < 0.35 ? 0xffe0a0 : (k < 0.7 ? 0xff8a2a : 0xd83a0a));
+    fx.mesh.material.opacity = 0.95 * (1 - k);
+  });
+  for (let i = 0; i < 12; i++) { const a = Math.random() * 6.28, s = 1.2 + Math.random() * 3.5; _particle(pos, i % 2 ? 0xffc040 : 0xff5a1a, 0.09 + Math.random() * 0.08, Math.cos(a) * s, 2.5 + Math.random() * 4, Math.sin(a) * s, 3.5, 0.45 + Math.random() * 0.4); }
+  flashLight(pos, 0xff7a2a, 7, 15, 0.4);
+}
+// RAIO: raio principal + ramos + faíscas elétricas + flash azul-branco frio
+function lightningStrike(a, b) {
+  lightningBolt(a, b);
+  for (let i = 0; i < 2; i++) { const mid = a.clone().lerp(b, 0.35 + Math.random() * 0.35); const end = mid.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3.5, -Math.random() * 2, (Math.random() - 0.5) * 3.5)); lightningBolt(mid, end); }
+  for (let i = 0; i < 7; i++) { const ang = Math.random() * 6.28, s = 2 + Math.random() * 3.5; _particle(b, 0xd8ecff, 0.05 + Math.random() * 0.04, Math.cos(ang) * s, 2 + Math.random() * 3, Math.sin(ang) * s, 7, 0.16 + Math.random() * 0.14); }
+  flashLight(b, 0x9ac8ff, 9, 17, 0.16);
+}
+// ar/força (Empurrão): anel + poeira levantada radial
+function shockDust(pos) {
+  ringEffect(pos, 0xbfe0ff, 9);
+  for (let i = 0; i < 9; i++) { const a = Math.random() * 6.28, s = 2.5 + Math.random() * 4.5; _particle(pos, i % 2 ? 0xcdd6de : 0xa8b2ba, 0.11 + Math.random() * 0.08, Math.cos(a) * s, 1 + Math.random() * 2.5, Math.sin(a) * s, 8, 0.4 + Math.random() * 0.25); }
 }
 
 // experience orbs & coins (very Fable)
@@ -1106,7 +1221,7 @@ const abilities = [
       const m = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 10), new THREE.MeshBasicMaterial({ color: 0xff8a2a }));
       m.position.copy(player.pos).add(new THREE.Vector3(0, 1.8, 0));
       scene.add(m);
-      projectiles.push({ mesh: m, target: t, speed: FIREBALL_SPEED });
+      projectiles.push({ mesh: m, target: t, speed: FIREBALL_SPEED, fire: true });
       beep(520, 0.18, 'sawtooth', 0.05, -260);
       castAbility('bola', t);
     } },
@@ -1967,11 +2082,13 @@ function caveTeleport(x, z, title, sub) {
 }
 function enterCave() {
   inCave = true; // grade de masmorra (Fase 35): frio, contrastado, opressivo
+  if (caveInterior) caveInterior.visible = true; // mostra o interior só quando dentro (bugfix domo preto)
   caveTeleport(CAVE.x + 16, CAVE.z + 16, 'Caverna dos Hobbes', 'A escuridão cheira a mofo e fumaça de tocha…');
   beep(90, 0.6, 'sawtooth', 0.06, -30);
 }
 function exitCave() {
   inCave = false;
+  if (caveInterior) caveInterior.visible = false; // esconde do mundo aberto
   caveTeleport(CAVE.entX, CAVE.entZ + 4, 'Colinas de Pedravento', 'A luz do dia recebe você de volta');
   beep(500, 0.4, 'sine', 0.05, 200);
 }
@@ -2134,6 +2251,11 @@ function updateColorGrade(dt, pos) {
   if (scene.background && scene.background.isColor) {
     envUniform.value.copy(scene.background).lerp(_caveAmb, _sCave * 0.8);
   }
+  // bugfix noturno: rim/atores eram constantes → "acesos" à noite. Rim cai e os atores
+  // escurecem à noite (clima mais dark), mas não na caverna (lá as tochas os iluminam).
+  const nd = night * (1 - _sCave * 0.85);
+  rimStrengthU.value = RIM.strength * (1 - nd * 0.82);
+  nightDimU.value = 1 - nd * 0.55;
 
   // alvo base por tempo do dia + desvio da região + cena
   const warm    = 0.05 + golden * 0.06 - night * 0.03 + g.warm - _sCombat * 0.03;
@@ -2189,6 +2311,29 @@ function updateColorGrade(dt, pos) {
   }
 }
 const _sunNDC = new THREE.Vector3();
+
+// alinhamento de pés ao terreno (Fase 41): inclina o ator para a normal do chão sob ele, para
+// não deslizar/afundar em ladeiras. Meia-inclinação (não deita demais). Aplicado no wrapper
+// (espaço-mundo) de fauna/inimigos/cão; o herói é tratado à parte (wrapper dentro do group).
+const _gaUp = new THREE.Vector3(0, 1, 0), _gaN = new THREE.Vector3(), _gaTilt = new THREE.Quaternion(), _gaYaw = new THREE.Quaternion();
+const _heroInv = new THREE.Quaternion(), _heroIdent = new THREE.Quaternion();
+
+// debounce do estado "andando" (bugfix): posições vêm em snapshots (~15Hz) → o delta por-frame
+// piscava e o setBase alternava Walk↔Idle a cada frame ("corre-para-corre-para"). Segura "andando"
+// por uma janela curta após o último movimento detectado → transição suave, sem gagueira.
+function movingHeld(obj, moved, dt) {
+  if (moved) obj._mvHold = 0.22; else obj._mvHold = Math.max(0, (obj._mvHold || 0) - dt);
+  return obj._mvHold > 0;
+}
+function groundAlign(obj, x, z, yaw) {
+  const D = 1.1;
+  const nx = terrainHeight(x - D, z) - terrainHeight(x + D, z);
+  const nz = terrainHeight(x, z - D) - terrainHeight(x, z + D);
+  _gaN.set(nx, 2.4 * D, nz).normalize().lerp(_gaUp, 0.45).normalize();
+  _gaTilt.setFromUnitVectors(_gaUp, _gaN);
+  _gaYaw.setFromAxisAngle(_gaUp, yaw);
+  obj.quaternion.copy(_gaTilt).multiply(_gaYaw);
+}
 
 // ============================================================ input
 const keys = {};
@@ -2524,25 +2669,28 @@ function guildmasterHints(dt) {
 
 // ============================================================ chicken AI
 function updateChicken(c, dt) {
+  if (!c.actor) return;
   if (c.state === 'fly') {
     c.vel.y -= 22 * dt;
     c.pos.addScaledVector(c.vel, dt);
-    c.model.group.rotation.x += c.spin * dt;
+    c.actor.wrapper.rotation.x += c.spin * dt; // gira ao ser chutada
     const gy = terrainHeight(c.pos.x, c.pos.z);
     if (c.pos.y <= gy) {
       c.pos.y = gy;
       c.state = 'idle';
-      c.model.group.rotation.x = 0;
+      c.actor.wrapper.rotation.x = 0;
       c.vel.set(0, 0, 0);
       floatText(c.pos, 'có có!', '#fff', 12);
     }
+    c.actor.setBase(['Idle']);
   } else {
+    let moving = false;
     const dP = c.pos.distanceTo(player.pos);
-    if (dP < 2.2) {
+    if (dP < 2.2) {                        // foge do herói
       const away = c.pos.clone().sub(player.pos).setY(0).normalize();
       c.pos.addScaledVector(away, 3.2 * dt);
-      c.model.group.rotation.y = Math.atan2(away.x, away.z);
-      c.walkT += dt * 14;
+      c.actor.wrapper.rotation.y = Math.atan2(away.x, away.z);
+      moving = true;
     } else {
       c.wTimer -= dt;
       if (c.wTimer <= 0) {
@@ -2555,16 +2703,16 @@ function updateChicken(c, dt) {
         if (d.length() > 0.4) {
           d.normalize();
           c.pos.addScaledVector(d, 1.4 * dt);
-          c.model.group.rotation.y = Math.atan2(d.x, d.z);
-          c.walkT += dt * 8;
+          c.actor.wrapper.rotation.y = Math.atan2(d.x, d.z);
+          moving = true;
         }
       }
     }
     c.pos.y = terrainHeight(c.pos.x, c.pos.z);
-    const ls = Math.sin(c.walkT) * 0.5;
-    c.model.legs[0].rotation.x = ls; c.model.legs[1].rotation.x = -ls;
+    c.actor.setBase(moving ? ['Walk'] : ['Idle']);
   }
-  c.model.group.position.copy(c.pos);
+  c.actor.wrapper.position.copy(c.pos);
+  c.actor.update(dt);
 }
 
 // ============================================================ NPC ambient & rotina diária
@@ -2717,7 +2865,7 @@ function updateDog(dt) {
   const digging = dog.state === 'dig' && dog.digTarget && d <= stopDist;
   if (dogActor) {
     dogActor.wrapper.position.copy(dog.pos);
-    dogActor.wrapper.rotation.y = dog.ry;
+    groundAlign(dogActor.wrapper, dog.pos.x, dog.pos.z, dog.ry); // pés na inclinação (Fase 41)
     if (digging) dogActor.setBase(['Eating', 'Idle_2_HeadLow', 'Idle']);
     else dogActor.setBase(moving ? (moveSpeed >= 7 ? ['Gallop', 'Walk'] : ['Walk']) : ['Idle', 'Idle_2']);
     dogActor.update(dt);
@@ -2913,7 +3061,10 @@ function animate() {
 setInterval(() => { if (document.hidden) tick(); }, 50);
 
 function tick() {
-  const dt = Math.min(clock.getDelta(), 0.05);
+  let dt = Math.min(clock.getDelta(), 0.05);
+  _frameMs = _frameMs * 0.92 + dt * 1000 * 0.08; // orçamento de frame (Fase 47)
+  // hit-stop (Fase 43): breve câmera-lenta ao acertar um golpe corpo-a-corpo → dá "peso"
+  if (hitStopT > 0) { hitStopT -= dt; dt *= 0.14; }
   time += dt;
 
   // ---------- player movement ----------
@@ -2964,6 +3115,20 @@ function tick() {
     }
   }
   heroModel.group.position.copy(player.pos);
+  // pés do herói na inclinação (Fase 41): tilt no wrapper (frame local do group), suave; nunca
+  // rolando ou no ar (aí o group faz o giro do rolamento). Compensa o yaw do group ao mapear a normal.
+  if (heroActor) {
+    if (player.rollT <= 0 && player.onGround) {
+      const px = player.pos.x, pz = player.pos.z, D = 1.1;
+      _gaN.set(terrainHeight(px - D, pz) - terrainHeight(px + D, pz), 2.4 * D, terrainHeight(px, pz - D) - terrainHeight(px, pz + D)).normalize().lerp(_gaUp, 0.5).normalize();
+      _heroInv.copy(heroModel.group.quaternion).invert();
+      _gaN.applyQuaternion(_heroInv); // normal do mundo → frame local do group
+      _gaTilt.setFromUnitVectors(_gaUp, _gaN);
+      heroActor.wrapper.quaternion.slerp(_gaTilt, 0.25);
+    } else {
+      heroActor.wrapper.quaternion.slerp(_heroIdent, 0.3);
+    }
+  }
 
   // hero animation — rising edges de ataque/rolamento para disparar as animações
   const swingRose = player.swingT > heroAnim.lastSwing + 0.001;
@@ -3025,7 +3190,8 @@ function tick() {
       updateNpc(n, dt);
       if (n.actor) {
         const moved = Math.hypot(n.pos.x - px, n.pos.z - pz) > 0.004;
-        n.actor.setBase(moved ? (n.fleeT > 0 ? ['Run', 'Walk'] : ['Walk']) : ['Idle']);
+        const moving = movingHeld(n, moved, dt);
+        n.actor.setBase(moving ? (n.fleeT > 0 ? ['Run', 'Walk'] : ['Walk']) : ['Idle']);
         n.actor.update(dt);
       }
     }
@@ -3064,6 +3230,10 @@ function tick() {
       dir.normalize();
       p.mesh.position.addScaledVector(dir, Math.min(d, p.speed * dt));
       if (p.orient) p.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      // rastro de fogo da Bola de Fogo (Fase 44): brasas que ficam pra trás e somem
+      if (p.fire && Math.random() < dt * 55) {
+        _particle(p.mesh.position, Math.random() < 0.5 ? 0xffb020 : 0xff5a1a, 0.09 + Math.random() * 0.06, (Math.random() - 0.5) * 1.2, 0.4 + Math.random() * 1.2, (Math.random() - 0.5) * 1.2, 2, 0.3 + Math.random() * 0.2);
+      }
     }
   }
 
@@ -3075,6 +3245,8 @@ function tick() {
     if (k >= 1) { scene.remove(fx.mesh); effects.splice(i, 1); }
     else fx.update(fx, k);
   }
+  updateParticles(dt);   // partículas pooladas (Fase 47)
+  updateSpellLights(dt); // pulso das luzes de magia (pool fixo, Fase 44)
 
   // ---------- selection ring ----------
   if (target && target.state !== 'dead' && target.state !== 'surrender') {
@@ -3218,6 +3390,12 @@ window.FABLE = {
   save: saveGame, load: loadGame,
   startGame, gtao, godrayUniforms, smaa, sharpen,
   setScene: (s) => { inCave = s === 'cave'; _dbgCombat = s === 'combat'; }, // debug do grade por cena (Fase 35)
+  vfx: { impact: (p, big) => impactBurst(p, big), swoosh: (p, ry) => bladeSwoosh(p, ry), hitstop: (t) => { hitStopT = t; }, // debug VFX (Fase 43)
+    fire: (p) => fireBurst(p), lightning: (a, b) => lightningStrike(a, b), shock: (p) => shockDust(p) }, // magia por escola (Fase 44)
+  lod: { setCulling, cullStats, draws: () => renderer.info.render.calls }, // debug LOD/culling (Fase 46)
+  perf: () => ({ frameMs: +_frameMs.toFixed(2), fps: Math.round(1000 / _frameMs), // orçamento + pools (Fase 47)
+    particlePool: { total: _partFree.length + _partActive.length, active: _partActive.length, free: _partFree.length },
+    effects: effects.length }),
 };
 
 updateHeroBody(); // arma inicial na mão + visual das disciplinas

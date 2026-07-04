@@ -32,6 +32,9 @@ const smokes = [];
 let stars, moonSprite, sunSprite, fireflies, water, waterGeo;
 let rain, seaWater, lightBeam, lightBeamTarget;
 export let forSaleSign = null;
+// interior da caverna (domo/piso/estalagmites/tochas) — escondido no mundo aberto p/ não
+// aparecer como um "domo preto" à distância; visível só quando o jogador está dentro (Fase 36).
+export let caveInterior = null;
 const boats = [];
 const gateGlows = [];
 const clouds = [];
@@ -174,8 +177,11 @@ function buildTownHouse(x, z, w, d, rot, tpl) {
   scene.add(g);
 }
 
+// props com culling por distância (Fase 46): esconde detalhe distante → menos draw calls olhando
+// o horizonte. A névoa já esconde o pop; props pequenos têm distância curta, árvores/rochas longa.
+const cullables = []; // { obj, x, z, d2 }
 // instancia um template de prop em (x,z), assentando a base no terreno
-function placeProp(tpl, x, z, { h = null, scale = null, ry = 0, collide = 0, sway = 0, sink = 0 } = {}) {
+function placeProp(tpl, x, z, { h = null, scale = null, ry = 0, collide = 0, sway = 0, sink = 0, cull = 0 } = {}) {
   const g = tpl.clone(true);
   const s = scale != null ? scale : h / tpl.userData.h;
   g.scale.setScalar(s);
@@ -184,9 +190,46 @@ function placeProp(tpl, x, z, { h = null, scale = null, ry = 0, collide = 0, swa
   scene.add(g);
   if (collide > 0) colliders.push({ x, z, r: collide });
   if (sway > 0) swayTrees.push({ group: g, phase: rnd(x + 3, z + 7) * Math.PI * 2, amp: sway });
+  if (cull > 0) cullables.push({ obj: g, x, z, d2: cull * cull });
   return g;
 }
+// reavalia visibilidade por distância do jogador (throttled — algumas vezes por segundo)
+let _cullT = 0, _cullOn = true;
+export function setCulling(on) { _cullOn = on; if (!on) for (const c of cullables) c.obj.visible = true; _cullT = 0; }
+export function cullStats() { let hidden = 0; for (const c of cullables) if (!c.obj.visible) hidden++; return { total: cullables.length, hidden }; }
+function updateCulling(dt, px, pz) {
+  if (!_cullOn) return;
+  _cullT -= dt;
+  if (_cullT > 0) return;
+  _cullT = 0.2;
+  for (const c of cullables) {
+    const dx = c.x - px, dz = c.z - pz;
+    c.obj.visible = (dx * dx + dz * dz) < c.d2;
+  }
+}
 const pick = (arr, x, z) => arr[Math.floor(rnd(x * 7.3 + 11, z * 3.1 + 5) * arr.length) % arr.length];
+
+// instancia N cópias de um template (Fase 48): 1 InstancedMesh por submesh do GLB → milhares de
+// props com custo de poucos draw calls. Sem sway individual (aceitável em vegetação de chão).
+const _im = new THREE.Matrix4(), _ip = new THREE.Vector3(), _iq = new THREE.Quaternion(), _is = new THREE.Vector3(), _iy = new THREE.Vector3(0, 1, 0);
+function instanceProp(tpl, places) {
+  if (!places.length) return;
+  tpl.updateWorldMatrix(true, true);
+  const subs = [];
+  tpl.traverse((o) => { if (o.isMesh) subs.push({ geo: o.geometry, mat: o.material, local: o.matrixWorld.clone() }); });
+  for (const sub of subs) {
+    const inst = new THREE.InstancedMesh(sub.geo, sub.mat, places.length);
+    inst.castShadow = true; inst.receiveShadow = true;
+    inst.frustumCulled = false; // cobrem a área toda; é 1 draw call de qualquer forma
+    for (let i = 0; i < places.length; i++) {
+      const p = places[i];
+      _iq.setFromAxisAngle(_iy, p.ry); _is.setScalar(p.s); _ip.set(p.x, p.y, p.z);
+      inst.setMatrixAt(i, _im.compose(_ip, _iq, _is).multiply(sub.local));
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    scene.add(inst);
+  }
+}
 
 async function dressWorld() {
   const urls = new Set();
@@ -209,21 +252,28 @@ async function dressWorld() {
     if (t) placeProp(t, p.x, p.z, {
       h: p.s * 4.2, ry: rnd(p.x, p.z) * Math.PI * 2,
       collide: 0.5 + p.s * 0.12, sway: (p.kind === 'pine' ? 0.02 : 0.03) / Math.max(0.6, p.s),
+      cull: 290, // árvores: some só além da névoa (sem pop visível)
     });
     else addTreeProcedural(p.x, p.z, p.s, p.kind); // fallback
   }
   for (const rk of rockPlacements) {
     const t = tpl[NAT + pick(ROCK_SET, rk.x, rk.z) + '.glb'];
-    if (t) placeProp(t, rk.x, rk.z, { scale: rk.s * 1.4, ry: rnd(rk.x, rk.z) * Math.PI * 2, collide: rk.s * 0.7, sink: rk.s * 0.12 });
+    if (t) placeProp(t, rk.x, rk.z, { scale: rk.s * 1.4, ry: rnd(rk.x, rk.z) * Math.PI * 2, collide: rk.s * 0.7, sink: rk.s * 0.12, cull: 240 });
     else placeRockProcedural(rk.x, rk.z, rk.s);
   }
+  // vegetação de chão agrupada por GLB → InstancedMesh (Fase 48): ~280 clones viram poucos draw calls
+  const scatterGroups = new Map(); // template → [{x,y,z,ry,s}]
   for (const sp of scatterPlacements) {
     const cfg = SCATTER[sp.kind]; if (!cfg) continue;
     const t = tpl[NAT + pick(cfg.set, sp.x, sp.z) + '.glb'];
     if (!t) continue; // sem fallback procedural para detalhe fino — só não aparece
     const h = cfg.h[0] + rnd(sp.x + 2, sp.z + 9) * (cfg.h[1] - cfg.h[0]);
-    placeProp(t, sp.x, sp.z, { h, ry: rnd(sp.x, sp.z) * Math.PI * 2, collide: cfg.collide, sway: cfg.sway });
+    const s = h / t.userData.h, y = terrainHeight(sp.x, sp.z) - t.userData.minY * s;
+    if (!scatterGroups.has(t)) scatterGroups.set(t, []);
+    scatterGroups.get(t).push({ x: sp.x, y, z: sp.z, ry: rnd(sp.x, sp.z) * Math.PI * 2, s });
+    if (cfg.collide > 0) colliders.push({ x: sp.x, z: sp.z, r: cfg.collide });
   }
+  for (const [t, places] of scatterGroups) instanceProp(t, places);
 }
 
 export function buildWorld() {
@@ -966,9 +1016,16 @@ export function addCampfire(x, z, big = false) {
   const light = new THREE.PointLight(0xff9a3a, 1.6, big ? 18 : 12);
   light.position.y = 1;
   g.add(flame, inner, light);
+  // fagulhas subindo (Fase 45): pontos aditivos que sobem da chama e reciclam
+  const nE = big ? 16 : 10, epts = [], ephase = [];
+  for (let i = 0; i < nE; i++) { epts.push(0, 0.6, 0); ephase.push(Math.random()); }
+  const egeo = new THREE.BufferGeometry();
+  egeo.setAttribute('position', new THREE.Float32BufferAttribute(epts, 3));
+  const embers = new THREE.Points(egeo, new THREE.PointsMaterial({ color: 0xffb24a, size: 0.12, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+  g.add(embers);
   g.position.set(x, y + 0.15, z);
   scene.add(g);
-  flames.push({ flame, inner, light });
+  flames.push({ flame, inner, light, embers, ephase, big });
   colliders.push({ x, z, r: 0.7 });
 }
 
@@ -1293,19 +1350,25 @@ function buildCave() {
     const dx = cx + Math.cos(a) * r, dz = cz + Math.sin(a) * r;
     decor(dx, dz, NAT + (i % 2 ? 'rock_smallA' : 'pot_large') + '.glb', 0.6 + rnd(i, 412) * 0.5, 0.4);
   }
+  // interior escondido no mundo aberto (só visível dentro da caverna) — o domo/piso/tochas
+  // apareciam como um "domo preto" à distância. As rochas-parede (via decor) ficam de fora
+  // do grupo → seguem visíveis como um afloramento natural que marca a entrada.
+  caveInterior = new THREE.Group();
+  caveInterior.visible = false;
+  scene.add(caveInterior);
   // teto de rocha (domo achatado) — bloqueia o céu → penumbra + sombra
   const dome = new THREE.Mesh(new THREE.SphereGeometry(R + 2, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2), rockMat2);
   dome.scale.y = 0.55;
   dome.material = new THREE.MeshLambertMaterial({ color: 0x2a2620, side: THREE.BackSide });
   dome.position.set(cx, y0 + 1, cz);
   dome.castShadow = true;
-  scene.add(dome);
+  caveInterior.add(dome);
   // piso escuro
   const floor = new THREE.Mesh(new THREE.CircleGeometry(R, 28), lambert(0x2e2a24));
   floor.rotateX(-Math.PI / 2);
   floor.position.set(cx, y0 + 0.05, cz);
   floor.receiveShadow = true;
-  scene.add(floor);
+  caveInterior.add(floor);
   // estalagmites
   for (let i = 0; i < 14; i++) {
     const a = rnd(i, 410) * Math.PI * 2, r = rnd(i, 411) * (R - 3);
@@ -1315,7 +1378,7 @@ function buildCave() {
     const spike = new THREE.Mesh(new THREE.ConeGeometry(0.35 + rnd(i, 413) * 0.3, h, 6), rockMat);
     spike.position.set(sx, y0 + h / 2, sz);
     spike.castShadow = true;
-    scene.add(spike);
+    caveInterior.add(spike);
     if (h > 2) colliders.push({ x: sx, z: sz, r: 0.4 });
   }
   // tochas nas paredes
@@ -1329,7 +1392,7 @@ function buildCave() {
     flame.position.set(tx, ty + 2.1, tz);
     const light = new THREE.PointLight(0xffa040, 2.2, 16);
     light.position.set(tx, ty + 2.2, tz);
-    scene.add(bracket, flame, light);
+    caveInterior.add(bracket, flame, light);
     caveTorches.push({ flame, light });
   }
   // baú trancado (tesouro) — precisa da Chave de Prata
@@ -1600,7 +1663,7 @@ function buildChests() {
 }
 
 // ------------------------------------------------ ambient life
-let motes;
+let motes, windLeaves;
 function buildAmbientLife() {
   // poeira/pólen dourado flutuando ao sol (partículas de atmosfera — magia de Fable)
   {
@@ -1638,6 +1701,22 @@ function buildAmbientLife() {
     fireflies.userData.base = pts.slice();
     scene.add(fireflies);
   }
+  // folhas ao vento (Fase 45): folhinhas âmbar/verdes que derivam com as rajadas e seguem o jogador
+  {
+    const N = 90, pts = [], seeds = [], cols = [];
+    const LC = [[0.71, 0.46, 0.17], [0.79, 0.54, 0.18], [0.54, 0.60, 0.23], [0.66, 0.35, 0.16]];
+    for (let i = 0; i < N; i++) {
+      pts.push((rnd(i, 140) - 0.5) * 100, 0.5 + rnd(i, 141) * 7, (rnd(i, 142) - 0.5) * 100);
+      seeds.push(rnd(i, 143) * 15);
+      const c = LC[Math.floor(rnd(i, 144) * LC.length) % LC.length]; cols.push(c[0], c[1], c[2]);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    windLeaves = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.24, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false, fog: true }));
+    windLeaves.userData.base = pts.slice(); windLeaves.userData.seeds = seeds;
+    scene.add(windLeaves);
+  }
   // butterflies
   const bColors = [0xf0a0c0, 0xf0e06a, 0x9ad0f0];
   for (let i = 0; i < 10; i++) {
@@ -1673,6 +1752,7 @@ function buildAmbientLife() {
 // ============================================================ per-frame world update
 export function updateWorld(time, dt, playerPos) {
   const nf = SKY.nightF;
+  updateCulling(dt, playerPos.x, playerPos.z); // LOD por distância (Fase 46)
   // ---- vento ----
   windUniform.value = time;
   const gust = 1 + Math.sin(time * 0.35) * 0.5; // rajadas suaves
@@ -1723,6 +1803,14 @@ export function updateWorld(time, dt, playerPos) {
     f.flame.scale.y = 1 + Math.sin(time * 12 + f.light.position.x) * 0.25;
     f.inner.scale.y = 1 + Math.cos(time * 15) * 0.3;
     f.light.intensity = 1.4 + Math.sin(time * 11) * 0.3 + nf * 0.6;
+    if (f.embers) { // fagulhas sobem, derivam e reciclam (Fase 45)
+      const pos = f.embers.geometry.attributes.position, top = f.big ? 3.6 : 2.5;
+      for (let i = 0; i < f.ephase.length; i++) {
+        const k = (time * 0.45 + f.ephase[i]) % 1;
+        pos.setXYZ(i, Math.sin((time + i) * 2.4) * 0.32 * k, 0.6 + k * top, Math.cos((time * 1.2 + i) * 2.4) * 0.32 * k);
+      }
+      pos.needsUpdate = true;
+    }
   }
   // chimney smoke
   for (const s of smokes) {
@@ -1750,6 +1838,20 @@ export function updateWorld(time, dt, playerPos) {
       pos.setX(i, base[i * 3] + Math.sin(time * 0.25 + s) * 3 + time * 0.4 % 90);
       pos.setY(i, base[i * 3 + 1] + Math.sin(time * 0.4 + s * 2) * 1.2);
       pos.setZ(i, base[i * 3 + 2] + Math.cos(time * 0.2 + s) * 3);
+    }
+    pos.needsUpdate = true;
+  }
+  // folhas ao vento (Fase 45): deriva direcional (+x) que envolve, com rajada e bob; some à noite
+  if (windLeaves) {
+    windLeaves.material.opacity = 0.65 * (1 - nf * 0.55);
+    windLeaves.position.set(Math.floor(playerPos.x / 100) * 100, 0, Math.floor(playerPos.z / 100) * 100);
+    const pos = windLeaves.geometry.attributes.position;
+    const base = windLeaves.userData.base, seeds = windLeaves.userData.seeds;
+    for (let i = 0; i < seeds.length; i++) {
+      const s = seeds[i];
+      pos.setX(i, ((base[i * 3] + 50 + time * 5 + s * 7) % 100) - 50 + Math.sin(time * 0.6 + s) * 3);
+      pos.setY(i, base[i * 3 + 1] + Math.sin(time * 0.9 + s * 1.5) * 1.4);
+      pos.setZ(i, base[i * 3 + 2] + Math.cos(time * 0.5 + s) * 3);
     }
     pos.needsUpdate = true;
   }

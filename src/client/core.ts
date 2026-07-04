@@ -61,6 +61,16 @@ gtao.updateGtaoMaterial({
   screenSpaceRadius: false,
 });
 composer.addPass(gtao);
+// Bugfix: o GTAO só exclui Points/Lines do G-buffer de normais/profundidade — NÃO os Sprites.
+// Billboards transparentes (fumaça de chaminé, glows) escreviam profundidade lá e a oclusão saía
+// ~0 → o AO multiplicava a fumaça pra PRETO. Patch: esconder também os Sprites nesse render.
+{
+  const _ov = gtao.overrideVisibility.bind(gtao);
+  gtao.overrideVisibility = function () {
+    _ov();
+    this.scene.traverse((o) => { if (o.isSprite) o.visible = false; });
+  };
+}
 
 export const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.4, 0.7, 0.85);
 composer.addPass(bloom);

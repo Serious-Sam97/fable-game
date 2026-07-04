@@ -39,23 +39,29 @@ export function loadProp(url) {
 // rim light por Fresnel (Fase 37): borda clara na silhueta (dot(normal,view)→0 nas quinas)
 // injetada no material toon — deixa personagens/props legíveis contra QUALQUER fundo (o contorno
 // escuro resolve fundo claro; o rim resolve fundo escuro, ex.: dentro da caverna). Sem geometria extra.
-const RIM = { color: new THREE.Color(0xffe9c8), power: 2.6, strength: 0.34 };
+export const RIM = { color: new THREE.Color(0xffe9c8), power: 2.6, strength: 0.34 };
 // cor do ambiente compartilhada (Fase 38) — UMA referência atualizada por frame propaga a todos
 // os materiais (padrão do waterUniforms): metais/armaduras ganham um brilho tingido pelo céu.
 export const envUniform = { value: new THREE.Color(0x9ec4e0) };
+// força do rim + escurecimento noturno, compartilhados (atualizados por frame em game.ts).
+// Bugfix: rim/sheen eram constantes → personagens ficavam "acesos" à noite; agora caem no escuro.
+export const rimStrengthU = { value: RIM.strength };
+export const nightDimU = { value: 1.0 }; // 1 de dia, <1 à noite → escurece os atores (clima dark)
 function addRim(mat, metallic) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uRimColor = { value: RIM.color };
     shader.uniforms.uRimPower = { value: RIM.power };
-    shader.uniforms.uRimStrength = { value: RIM.strength };
-    shader.uniforms.uEnvColor = envUniform;             // referência compartilhada
+    shader.uniforms.uRimStrength = rimStrengthU;        // compartilhado (cai à noite)
+    shader.uniforms.uEnvColor = envUniform;             // compartilhado
+    shader.uniforms.uNightDim = nightDimU;              // compartilhado
     shader.uniforms.uMetal = { value: metallic ? 1.0 : 0.0 };
-    shader.fragmentShader = 'uniform vec3 uRimColor, uEnvColor; uniform float uRimPower, uRimStrength, uMetal;\n' +
+    shader.fragmentShader = 'uniform vec3 uRimColor, uEnvColor; uniform float uRimPower, uRimStrength, uMetal, uNightDim;\n' +
       shader.fragmentShader.replace(
         '#include <opaque_fragment>',
-        'float _fr = 1.0 - clamp(dot(normalize(vNormal), normalize(vViewPosition)), 0.0, 1.0);\n' +
+        'outgoingLight *= uNightDim;\n' + // clima mais dark à noite (o toon ramp erguia demais os atores)
+        '  float _fr = 1.0 - clamp(dot(normalize(vNormal), normalize(vViewPosition)), 0.0, 1.0);\n' +
         '  outgoingLight += pow(_fr, uRimPower) * uRimColor * uRimStrength;\n' +
-        '  outgoingLight += uMetal * pow(_fr, 1.5) * uEnvColor * 0.55;\n' + // env-sheen do metal (reage ao céu)
+        '  outgoingLight += uMetal * pow(_fr, 1.5) * uEnvColor * 0.55 * uNightDim;\n' + // env-sheen do metal
         '  #include <opaque_fragment>'
       );
     mat.userData.rimShader = shader;
@@ -190,16 +196,21 @@ export class Actor {
 
     this.mixer = new THREE.AnimationMixer(this.root);
     this.byName = {};
-    for (const clip of gltf.animations) this.byName[clip.name] = this.mixer.clipAction(clip);
+    this.clips = {};       // clips crus (p/ derivar versões aditivas — Fase 42)
+    for (const clip of gltf.animations) { this.byName[clip.name] = this.mixer.clipAction(clip); this.clips[clip.name] = clip; }
     this.base = null;      // estado de locomoção em loop (idle/walk/run)
-    this.oneShot = null;   // ação única sobreposta (ataque/rolar/hit)
+    this.oneShot = null;   // ação única sobreposta full-body (rolar/morrer)
     this.returnBase = null;
+    this._addActions = {}; // cache de ações ADITIVAS (upper-body: ataque enquanto anda)
+    this._addSet = new Set();
     this._warned = new Set(); // avisa 1× por conjunto de aliases sem correspondência
 
     this.mixer.addEventListener('finished', (e) => {
       if (e.action === this.oneShot) {
         this.oneShot = null;
         if (this.returnBase) this._fadeTo(this.returnBase, 0.15);
+      } else if (this._addSet.has(e.action)) {
+        e.action.stop(); // camada aditiva termina no frame ~neutro → parar não dá pop
       }
     });
   }
@@ -244,6 +255,29 @@ export class Actor {
     this.returnBase = this.base;
     this.oneShot = a;
     this._fadeTo(a, fade);
+  }
+
+  /** dispara uma ação ADITIVA sobreposta (Fase 42): soma o delta do clip (relativo ao frame 0)
+   *  por cima da locomoção — os braços atacam/miram enquanto as pernas continuam andando. Não
+   *  toca no base nem no oneShot, então setBase segue livre (andar não para pra golpear). */
+  triggerUpper(names, { fade = 0.1, speed = 1 } = {}) {
+    const clip = pickClip(this.clips, names);
+    if (!clip) { this._missing(names); return; }
+    let a = this._addActions[clip.name];
+    if (!a) {
+      const add = clip.clone();
+      THREE.AnimationUtils.makeClipAdditive(add); // aditivo relativo ao frame 0 do próprio clip
+      a = this.mixer.clipAction(add, undefined, THREE.AdditiveAnimationBlendMode);
+      a.setLoop(THREE.LoopOnce, 1);
+      this._addActions[clip.name] = a;
+      this._addSet.add(a);
+    }
+    a.stop();
+    a.timeScale = speed;
+    a.reset();
+    a.setEffectiveWeight(1);
+    a.fadeIn(fade);
+    a.play();
   }
 
   bone(name) {

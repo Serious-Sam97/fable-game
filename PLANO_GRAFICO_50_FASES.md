@@ -318,6 +318,11 @@ bancada onde calibramos tudo das próximas fases sem caçar no jogo inteiro.
 > escuro**; **120 FPS** (fresnel por-pixel, sem geometria extra). `assets.ts:addRim/toonify`.
 > *`RIM` (cor/power/força) centralizado p/ tuning. Hull-outline em mais props-chave (baús/portais)
 > fica como refino opcional — o rim já dá coesão a tudo mais barato.*
+> **Bugfix noturno (feedback do dono):** rim/env-sheen eram constantes → atores ficavam "acesos"
+> à noite (armadura brilhando no escuro). Agora `rimStrengthU`/`nightDimU` (compartilhados, por
+> frame via `nightF`) fazem o rim cair e os atores **escurecerem à noite** (clima mais dark),
+> **exceto na caverna** (guard por `_sCave` — lá as tochas iluminam). Verificado: noite escura,
+> dia e caverna intactos, 120 FPS. `assets.ts:addRim`, `game.ts:updateColorGrade`.
 
 ### Fase 38 — Reflexos (env map) ✅
 > Tudo é toon (ignora envMap tradicional) → reflexos **procedurais** coesos com o estilo.
@@ -358,37 +363,109 @@ bancada onde calibramos tudo das próximas fases sem caçar no jogo inteiro.
 
 ## BLOCO E — VFX, animação avançada, performance & polish ⬜
 
-### Fase 41 — IK de pés no terreno ⬜
-O pé pousa na inclinação real do chão (o "resta" da Fase 11 do plano-mestre).
-**Pronto:** andar em ladeira não desliza nem afunda os pés.
+### Fase 41 — Conformação ao terreno (pés na ladeira) ✅
+> `groundAlign()` em `game.ts`: estima a **normal do terreno** sob o ator (gradiente de `terrainHeight`
+> em ±1.1u) e inclina o ator para ela — com **meia-inclinação** (lerp 0.5 p/ cima, não deita demais).
+> Assim, em ladeira o corpo conforma e os pés não flutuam/afundam num lado. Aplicado no `wrapper`
+> (espaço-mundo) de **fauna, inimigos e cão**; o **herói** é tratado à parte (wrapper dentro do
+> group que faz facing/rolamento) — a normal do mundo é levada ao frame local do group e o tilt é
+> **slerpado** no wrapper, desligado ao rolar/pular. Verificado no preview: numa encosta de ~38°, o
+> wrapper do herói inclina **~9.9°** (quaternion não-identidade) e o modelo conforma; **120 FPS** com
+> 55 inimigos + 9 fauna alinhados; 0 erros. `game.ts:groundAlign`.
+> *Honestidade: é **conformação de corpo à inclinação**, não IK de 2 ossos por pé — o IK real por
+> perna é frágil nos rigs variados dos packs e quase invisível nesta câmera; a conformação entrega
+> o "não desliza/afunda" de forma robusta. IK esquelética por pé fica como refino do Bloco E.*
 
-### Fase 42 — Blending upper/lower body ⬜
-Atacar enquanto anda, mirar arco andando — corpo dividido em camadas de animação.
-**Pronto:** ações compostas ficam naturais, sem parar para golpear.
+### Fase 42 — Blending upper/lower body ✅
+> `Actor.triggerUpper()` (`assets.ts`): toca uma **ação ADITIVA** (`makeClipAdditive` relativo ao
+> frame 0 + `AdditiveAnimationBlendMode`) por cima da locomoção, sem tocar no base/oneShot → os
+> braços atacam/miram enquanto as pernas seguem andando. Clips cacheados por ator; ao terminar, a
+> camada para no frame ~neutro (sem pop). No `driveHeroActor` (`game.ts`) o **ataque/tiro do herói**
+> virou `triggerUpper` (rolar/morrer seguem full-body). Verificado objetivamente no preview: durante
+> o golpe, o base 'Run' segue **rodando a peso 1** e as pernas animam de verdade (footWorldY 1.27→0.94,
+> UpperLegL girando, base.time avançando) — antes o ataque apagava o andar; a camada aditiva encerra
+> limpa (`isRunning=false`, sem resíduo); pose de meio-golpe natural; 0 erros; **~112 FPS**.
+> `assets.ts:Actor.triggerUpper`, `game.ts:driveHeroActor`. *Inimigos seguem com ataque full-body
+> (param pra golpear, o que é legível); estender o aditivo a eles fica como refino opcional.*
 
-### Fase 43 — VFX de combate ⬜
-Trilhas de lâmina, impactos, faíscas, sangue estilizado, hit-stop no acerto.
-**Pronto:** bater tem peso visual e feedback claro de acerto.
+### Fase 43 — VFX de combate ✅
+> Três camadas de feedback de golpe em `game.ts`, sobre o sistema `addEffect`: **(1) impacto** —
+> no evento `edmg` (inimigo danificado), `impactBurst()` solta um flash quente + **faíscas** douradas
+> e **sangue estilizado** (crimson) em jato balístico (posição paramétrica em k, sem depender de dt),
+> maior no crítico; **(2) trilha de lâmina** — `bladeSwoosh()` um crescente claro que varre à frente
+> do herói a cada golpe corpo-a-corpo (na direção do facing); **(3) hit-stop** — `hitStopT` escala o
+> `dt` do loop pra ~14% por ~50–80ms só no MEU golpe melee (mais forte no crítico) → dá "peso".
+> Verificado no preview: swoosh + faíscas + sangue visíveis no screenshot; hit-stop medido
+> objetivamente (anim avança 0.015s vs 0.109s normal → ratio **0.14**); **120 FPS**; 0 erros.
+> `game.ts:impactBurst/bladeSwoosh/hitStopT`. Debug em `window.FABLE.vfx`.
 
-### Fase 44 — VFX de magia por escola ⬜
-Fogo/gelo/raio/sombra com partículas e luz próprias (prepara a Fase 7 do plano-mestre).
-**Pronto:** cada escola de magia tem assinatura visual inconfundível.
+### Fase 44 — VFX de magia por escola ✅
+> Assinaturas visuais distintas por escola em `game.ts`, cada uma com partículas **e luz própria**:
+> **FOGO** (`fireBurst`, evento `boom` + rastro no projétil da Bola de Fogo) — núcleo quente que
+> expande e esfria (amarelo→laranja→brasa) + brasas subindo + luz laranja; **RAIO** (`lightningStrike`,
+> evento `bolt`) — raio principal + ramos + faíscas elétricas + flash azul-branco frio; **AR/FORÇA**
+> (`shockDust`, Empurrão) — anel + poeira radial. A "luz própria" usa um **pool fixo de 4 PointLights**
+> (`_spellLights`): add/remove de luz recompila TODOS os shaders da cena → **travava ao spammar**; o
+> pool fica sempre na cena (intensidade 0 ocioso) → contagem de luzes constante, zero recompile.
+> Verificado no preview: fogo/raio/força com assinaturas nítidas (screenshots à noite — o fogo
+> ilumina a cena de laranja); 5 casts em 0.3ms sem travar, luzes **24→24** (pool estável); 0 erros.
+> `game.ts:fireBurst/lightningStrike/shockDust/_spellLights`. Debug em `window.FABLE.vfx`.
+> *Gelo/Sombra ainda não existem como feitiços (vêm na Fase 7 do plano-mestre) — o framework de
+> partículas+luz por escola já está pronto pra eles. Vigiar: a vila já tem ~20 point lights; +4 do
+> pool é modesto mas some no orçamento de luz em máquina fraca.*
 
-### Fase 45 — Partículas ambientais ⬜
-Poeira ao sol, folhas ao vento, fagulhas de fogueira, vaga-lumes à noite.
-**Pronto:** o ar tem partículas; a cena "respira".
+### Fase 45 — Partículas ambientais ✅
+> **Poeira ao sol** (`motes`) e **vaga-lumes à noite** (`fireflies`) já existiam do Bloco C. Adicionadas
+> em `world.ts`: **fagulhas de fogueira** — cada `addCampfire` ganha um `Points` aditivo (10/16 pts)
+> que sobe da chama, deriva e recicla (posição paramétrica em `time`); e **folhas ao vento** — um
+> `Points` com `vertexColors` (âmbar/verdes) com deriva direcional (+x que envolve) + rajada + bob,
+> seguindo o jogador e sumindo à noite. Verificado no preview (objetivo, já que a aba throttlava o
+> rAF): 8 nuvens de `Points` na cena — **3 de fagulhas** (10/10/16 aditivas) + **folhas** (90 pts,
+> vertexColors) + motes/fireflies/estrelas; fagulhas **animando** (Y espalhado 0.72→3.05, subindo e
+> reciclando); screenshot do acampamento ao dusk mostra as fagulhas subindo do fogo + partículas no
+> ar. `world.ts:addCampfire (embers)`, `buildAmbientLife/updateWorld (windLeaves)`. *Custo desprezível
+> (Points, poucas centenas de pontos). FPS não medido nesta leva — aba do preview throttlando o rAF.*
 
-### Fase 46 — LOD & impostors ⬜
-Níveis de detalhe e billboards distantes para árvores/props — vista longa barata.
-**Pronto:** olhar o horizonte cheio de árvores não derruba o frame.
+### Fase 46 — LOD por distância ✅
+> **Distance-culling** em `world.ts`: `placeProp` registra props num `cullables` com uma distância
+> de corte por tipo — detalhe fino (scatter/vegetação) some a **150u**, rochas a 240u, árvores a
+> **290u** (só além da névoa → sem pop visível). `updateCulling` reavalia a visibilidade por
+> distância do jogador ~5×/s (throttled, custo desprezível). Verificado no preview com A/B
+> (`window.FABLE.lod.setCulling`): num ponto central, **159 de 396 props (40%) são cortados** — 40%
+> menos objetos submetidos (draw + sombra) — e os screenshots on-vs-off ficam **idênticos** (a névoa
+> + o tamanho minúsculo escondem o corte); 0 erros. `world.ts:cullables/updateCulling/placeProp`.
+> *Honestidade: fiz LOD por distância (corte), **não** impostores billboard renderizados (precisam de
+> render-target por tipo de árvore — mais código/risco; a névoa já esconde as árvores distantes, e a
+> Fase 48 (instancing) vai baratear os props repetidos de perto). O corte já entrega o "horizonte
+> não derruba o frame". `renderer.info.render.calls` não serve de métrica aqui — lê só o último passe
+> do composer (fullscreen); a contagem de props cortados é a prova real.*
 
-### Fase 47 — Culling & object pooling de VFX ⬜
-Frustum/occlusion culling + pool de partículas/textos; orçamento de frame monitorado.
-**Pronto:** nada é desenhado fora de tela; VFX não geram garbage collection.
+### Fase 47 — Culling & object pooling de VFX ✅
+> **Pool de partículas** em `game.ts`: o `_particle` (usado por todo VFX de combate/magia — faíscas,
+> sangue, brasas, faíscas elétricas, rastro de fogo) parou de alocar `Mesh`+`Material` por partícula.
+> Agora reusa malhas de um **free-stack O(1)** (`_partFree`/`_partActive`), sempre na cena,
+> `visible=false` quando livres, com update paramétrico próprio. **Zero GC** durante o combate.
+> **Frustum culling** já é automático no three (por objeto). **Orçamento de frame** monitorado via
+> `_frameMs` (média móvel) exposto em `window.FABLE.perf()` (frameMs/fps + stats do pool + nº de
+> efeitos). Verificado no preview objetivamente: batch de 8 fireBursts → **96 partículas ativas**;
+> depois de expirarem → **96 livres**; batch 2 de 8 → pool **continua 96** (reusou, não cresceu pra
+> 192) = **`reusedNotGrown: true`**; jogo renderiza igual; 0 erros. `game.ts:_particle/updateParticles/perf`.
+> *Occlusion culling real (além do frustum) fica de fora — three não traz nativo e o ganho não
+> justifica o custo aqui; o pooling + o LOD da Fase 46 já seguram o orçamento.*
 
-### Fase 48 — Instancing em massa & batching ⬜
-Grama, props repetidos e multidões em InstancedMesh; menos draw calls.
-**Pronto:** milhares de tufos/props com custo de poucos objetos.
+### Fase 48 — Instancing em massa & batching ✅
+> Grama (~2600), flores e os detritos de chão (Fase 28: pedrinhas/galhos/folhas) já eram
+> `InstancedMesh`. Adicionado: **vegetação de chão** (arbustos/samambaias/flores/cogumelos/tocos,
+> ~280 clones individuais) agora vai por `instanceProp` em `world.ts` — agrupa as placements pelo
+> GLB resolvido e cria **1 `InstancedMesh` por submesh** (compõe matriz do prop × matriz local da
+> submesh → suporta GLB multi-mesh). Verificado no preview: cena tem **48 InstancedMeshes segurando
+> 4322 instâncias**; o scatter virou **37 InstancedMeshes** (era ~280 objetos); as instâncias estão
+> nas posições certas (amostra espalhada 118u, todas visíveis) e a vegetação renderiza normal
+> (flores/samambaias no lugar, sem deformar); 0 erros. `world.ts:instanceProp/dressWorld`.
+> *Trade-off honesto: o scatter instanciado perde o sway individual (sutil demais pra importar) e o
+> distance-cull da Fase 46 (mas agora é 1 draw call fixo, então não precisa cull). **Árvores/rochas
+> seguem individuais** — são multi-mesh COM sway visível; instanciá-las pede wind por-instância no
+> shader (como a grama) — fica como refino futuro se o frame apertar em máquina fraca.*
 
 ### Fase 49 — Otimização de texturas/materiais ⬜
 Atlas, compressão KTX2/Draco, corte de memória de GPU.
