@@ -22,6 +22,7 @@ export interface EnemyDef {
   bomber?: boolean;  // explode ao alcançar o herói (ou ao morrer)
   alpha?: boolean;   // uivo de aggro alerta a matilha num raio maior
   slam?: boolean;    // pancada de área periódica (troll)
+  guard?: boolean;   // guarda da vila — só persegue jogadores PROCURADOS
 }
 
 export const ENEMY_DEFS: Record<string, EnemyDef> = {
@@ -91,6 +92,11 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
     name: 'Lorde Malachi, o Herói Caído', lvl: 12, hp: 1200, dmg: [20, 30], xp: 1000, gold: [200, 300],
     renown: 25, speed: 5.6, aggro: 30, atkR: 2.8, atkCd: 1.3, icon: '☠️', plateH: 3.4, respawn: 0,
     slam: true, // golpe de energia sombria em área
+  },
+  guarda: {
+    name: 'Guarda de Pedravento', lvl: 6, hp: 220, dmg: [12, 18], xp: 0, gold: [0, 0],
+    renown: 0, speed: 5.2, aggro: 16, atkR: 2.3, atkCd: 1.3, icon: '🛡️', plateH: 2.9, respawn: 8,
+    guard: true,
   },
 };
 

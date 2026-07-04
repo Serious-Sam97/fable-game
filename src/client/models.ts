@@ -303,7 +303,7 @@ export function applyArmorTo(model, slots) {
 }
 
 // ---------------------------------------------------------------- villagers / NPCs
-export function makeVillager({ robe = 0x2a4a7a, skin = 0xd8a878, hair = 0x888888, beard = false, hat = null, staff = false } = {}) {
+export function makeVillager({ robe = 0x2a4a7a, skin = 0xd8a878, hair = 0x888888, beard = false, hat = null, staff = false, guard = false } = {}) {
   const h = makeHumanoid({ skin, hair, shirt: robe, sleeves: robe, pants: robe, boots: 0x2e2118, bulk: 0.92 });
   const { group: g, mats, M } = h;
 
@@ -343,8 +343,26 @@ export function makeVillager({ robe = 0x2a4a7a, skin = 0xd8a878, hair = 0x888888
     h.armR.add(st, orb);
     h.armR.rotation.x = -0.25;
   }
+  if (guard) {
+    // elmo de aço + peitoral + lança
+    const helm = new THREE.Mesh(new THREE.SphereGeometry(0.25, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.62), M(0x9aa0aa));
+    helm.geometry.scale(1.05, 1.1, 1.05);
+    helm.position.y = 0.06;
+    const crest = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.34), M(0xa03028));
+    crest.position.y = 0.32;
+    h.head.add(helm, crest);
+    const chest = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.4, 6, 12), M(0x8a9099));
+    chest.geometry.scale(1.15, 1, 0.88);
+    chest.position.y = 1.55;
+    g.add(chest);
+    const spear = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 2.4, 6), M(0x5a4028));
+    spear.position.set(0, -0.2, 0.16);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.3, 6), M(0xcfd6e0));
+    tip.position.set(0, 1.15, 0.16);
+    h.armR.add(spear, tip);
+  }
   shadows(g);
-  return { group: g, armL: h.armL, armR: h.armR, mats };
+  return { group: g, armL: h.armL, armR: h.armR, legL: h.legL, legR: h.legR, mats, legs: [h.legL, h.legR] };
 }
 
 // ---------------------------------------------------------------- bandit

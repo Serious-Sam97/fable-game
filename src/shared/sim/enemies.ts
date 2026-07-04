@@ -9,6 +9,7 @@ export interface SimPlayerView {
   x: number;
   z: number;
   dead: boolean;
+  wanted?: boolean; // procurado — guardas o perseguem
 }
 
 export type SimEvent =
@@ -101,6 +102,10 @@ export class EnemySim {
     }
     this.spawn('lobo_alfa', 95, 55);
     this.spawn('troll', 105, -35); // colinas a leste do lago
+    // guardas patrulhando as duas cidades (só perseguem procurados)
+    this.spawn('guarda', 4, 2);
+    this.spawn('guarda', -6, -4);
+    this.spawn('guarda', 220, 42); // Porto Bruma
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
       this.spawn('caranguejo', CRAB_BEACH.x + Math.cos(a) * (4 + rnd(i, 330) * 10), CRAB_BEACH.z + Math.sin(a) * (4 + rnd(i, 331) * 8));
@@ -330,7 +335,8 @@ export class EnemySim {
       }
 
       if (e.state === 'idle') {
-        const near = this.nearest(players, e.x, e.z);
+        // guardas só perseguem jogadores PROCURADOS; os demais, o jogador mais próximo
+        const near = def.guard ? this.nearestWanted(players, e.x, e.z) : this.nearest(players, e.x, e.z);
         if (near && Math.hypot(near.x - e.x, near.z - e.z) < aggroR) {
           e.state = 'chase';
           e.targetPid = near.id;
@@ -352,7 +358,9 @@ export class EnemySim {
           this.moveToward(e, e.wanderX, e.wanderZ, def.speed * 0.35, eDt);
         }
       } else if (e.state === 'chase' || e.state === 'attack') {
-        if (!tgt || dHome > 55) {
+        // guarda desiste se o alvo deixou de ser procurado (pagou a ficha / se acalmou)
+        const guardGaveUp = def.guard && (!tgt || !tgt.wanted);
+        if (!tgt || dHome > 60 || guardGaveUp) {
           e.state = 'return';
           e.targetPid = null;
           e.hp = e.maxHp;
@@ -483,6 +491,16 @@ export class EnemySim {
     let best: SimPlayerView | null = null, bd = Infinity;
     for (const p of players) {
       if (p.dead) continue;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  }
+
+  private nearestWanted(players: SimPlayerView[], x: number, z: number): SimPlayerView | null {
+    let best: SimPlayerView | null = null, bd = Infinity;
+    for (const p of players) {
+      if (p.dead || !p.wanted) continue;
       const d = Math.hypot(p.x - x, p.z - z);
       if (d < bd) { bd = d; best = p; }
     }

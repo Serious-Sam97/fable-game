@@ -56,7 +56,9 @@ const player = {
   ownedHouse: false, rentDay: 0,            // casa comprável (Fable) + aluguel por dia
   silverKey: false,                         // Chave de Prata do Capitão Hobbe
   mats: { herb: 0, ore: 0 },                // materiais de crafting
+  bounty: 0, lastCrime: -99,                // ficha criminal (procura) — guardas caçam
 };
+const isWanted = () => player.bounty > 0;
 const hasTalent = (k) => !!player.talents[k];
 
 // casa à venda em Pedravento (a cabana em 15,8) — porta virada para o sul
@@ -313,6 +315,7 @@ const MAKERS = {
   caranguejo: () => makeCrab(),
   cavaleiro_sombrio: () => makeShadowKnight(),
   malachi: () => makeMalachi(),
+  guarda: () => makeVillager({ robe: 0x3a4a6a, hair: 0x2a2a2a, guard: true }),
 };
 
 // simulação local — autoritativa apenas OFFLINE; online o servidor é a verdade
@@ -910,7 +913,11 @@ function tryAbility(i) {
   if (gcd > 0 || cooldowns[i] > 0) return;
   if (player.will < ab.cost) { errorMsg('Vontade insuficiente'); return; }
   if (ab.needTarget) {
-    if (!target || target.state === 'dead' || target.state === 'surrender') { errorMsg('Você não tem um alvo'); return; }
+    if (!target || target.state === 'dead' || target.state === 'surrender') {
+      // Golpe sem alvo inimigo: talvez você esteja atacando um aldeão (crime)
+      if (i === 0 && strikeNearbyVillager()) { cooldowns[0] = ab.cd; gcd = 1.0; return; }
+      errorMsg('Você não tem um alvo'); return;
+    }
     const d = Math.hypot(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
     const range = i === 0 ? equippedStats().range : ab.range; // golpe usa o alcance da arma
     if (d > range) { errorMsg('Fora de alcance'); return; }
@@ -1030,6 +1037,21 @@ const closeBtn = { label: 'Fechar' };
 
 function talkTo(npc) {
   if (npc.role === 'guildmaster') {
+    // limpar a ficha criminal tem prioridade — pague a multa à Guilda
+    if (player.bounty > 0) {
+      const fine = Math.ceil(player.bounty) * 5;
+      showDialog('Mestre da Guilda',
+        `"Chegaram-me queixas sobre você, herói. Os guardas não esquecem. Pague a multa e limparei seu nome — ou continue foragido."`,
+        `Multa: ${fine} 🪙 (procura ${Math.ceil(player.bounty)}/100)`,
+        [{ label: `Pagar ${fine} 🪙`, cls: 'good', cb: () => {
+          if (player.gold < fine) { errorMsg('Ouro insuficiente'); return; }
+          player.gold -= fine; player.bounty = 0;
+          toast('⚖️ Sua ficha foi limpa');
+          centerMsg('Nome limpo', 'Os guardas baixam as armas');
+          saveGame();
+        } }, closeBtn]);
+      return;
+    }
     // desbloqueia o arco principal depois de vencer o Balverine
     if (quests.q3.state === 'completed' && quests.mq.stage === 'locked') quests.mq.stage = 'available';
     const mq = quests.mq;
@@ -1557,6 +1579,37 @@ function openHouseDialog() {
   }
 }
 
+// ============================================================ crimes & procura
+function commitCrime(bounty, moralityHit, label) {
+  player.bounty = Math.min(100, player.bounty + bounty);
+  player.lastCrime = time;
+  changeMorality(moralityHit);
+  const wasWanted = player.bounty - bounty > 0;
+  if (!wasWanted) {
+    centerMsg('PROCURADO!', 'Os guardas de Pedravento vão atrás de você');
+    beep(160, 0.5, 'sawtooth', 0.06, -40);
+  }
+  floatText(player.pos, label, '#ff5a5a', 15);
+  saveGame();
+}
+
+// atacar um aldeão inocente (Golpe sem alvo inimigo, aldeão à frente e no alcance)
+function strikeNearbyVillager() {
+  let victim = null, bd = 3.2;
+  for (const n of npcs) {
+    if (n.asleep || n.role === 'guard') continue;
+    const d = n.pos.distanceTo(player.pos);
+    if (d < bd) { bd = d; victim = n; }
+  }
+  if (!victim) return false;
+  player.swingT = 0.35;
+  beep(160, 0.08, 'square', 0.06);
+  floatText(victim.pos, '💥', '#ff5a5a', 20);
+  victim.fleeT = 6; // foge apavorado
+  commitCrime(35, -8, '⚔️ Você atacou um inocente!');
+  return true;
+}
+
 // ============================================================ clímax: Malachi
 function malachiAlive() {
   return enemies.some((e) => e.type === 'malachi' && e.state !== 'dead');
@@ -1777,6 +1830,9 @@ function kickChicken(c) {
   beep(300, 0.12, 'square', 0.06, 250);
   setTimeout(() => beep(1500, 0.15, 'sawtooth', 0.05, -600), 80);
   floatText(c.pos, '🐔!!', '#fff', 18);
+  // maltratar animais perto de um guarda é contravenção leve
+  const nearGuard = enemies.some((e) => e.type === 'guarda' && e.pos.distanceTo(player.pos) < 18);
+  if (nearGuard) commitCrime(12, 0, '🐔 Vandalismo!');
   if (player.kicks >= 10 && !player.achKick) {
     player.achKick = true;
     toast('🏅 Título ganho: Chuta-Galinhas');
@@ -1923,7 +1979,7 @@ function buildSaveData() {
     talents: player.talents,
     fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
     silverKey: player.silverKey, lockedChestOpened: lockedChest.opened,
-    mats: player.mats,
+    mats: player.mats, bounty: player.bounty,
   };
 }
 function saveGame() {
@@ -1954,6 +2010,7 @@ function applySaveData(data) {
   player.rentDay = data.rentDay ?? 0;
   player.silverKey = !!data.silverKey;
   player.mats = data.mats ?? { herb: 0, ore: 0 };
+  player.bounty = data.bounty ?? 0;
   if (data.lockedChestOpened) {
     lockedChest.opened = true;
     if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
@@ -2017,7 +2074,7 @@ function startGame(fromSave) {
         str: cs.str, skl: cs.skl, wil: cs.wil,
         wpn: player.equipped.wpn,
         wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, spellMult: cs.spellMult,
-        critBonus: cs.critBonus, chainBonus: cs.chainBonus,
+        critBonus: cs.critBonus, chainBonus: cs.chainBonus, wanted: isWanted(),
         aHead: player.armor.head?.arm ?? '', aChest: player.armor.chest?.arm ?? '',
         aLegs: player.armor.legs?.arm ?? '', aBoots: player.armor.boots?.arm ?? '',
       };
@@ -2186,6 +2243,23 @@ function walkNpcTo(n, tx, tz, speed, dt) {
 function updateNpc(n, dt) {
   const dP = n.pos.distanceTo(player.pos);
   const night = SKY.nightF > 0.6;
+
+  // aldeão apavorado (foi atacado) — corre para longe gritando
+  if (n.fleeT > 0) {
+    n.fleeT -= dt;
+    const away = n.pos.clone().sub(player.pos).setY(0);
+    if (away.lengthSq() < 0.01) away.set(1, 0, 0);
+    away.normalize();
+    n.pos.addScaledVector(away, 6 * dt);
+    n.model.group.rotation.y = Math.atan2(away.x, away.z);
+    const np = resolveStatic(n.pos.x, n.pos.z, 0.4);
+    n.pos.x = np[0]; n.pos.z = np[1];
+    n.pos.y = terrainHeight(n.pos.x, n.pos.z);
+    n.model.group.position.copy(n.pos);
+    n.sayT -= dt;
+    if (n.sayT <= 0) { n.sayT = 1.5; floatText(n.pos, 'Socorro! Guardas!', '#ff8a8a', 14); }
+    return;
+  }
 
   if (night) {
     // vai para a cama e "dorme" (some dentro de casa, retorna de dia)
@@ -2430,6 +2504,8 @@ function tick() {
     player.will = Math.min(player.maxWill, player.will + 4 * (hasTalent('serenidade') ? 1.5 : 1) * dt);
     player.stam = Math.min(player.maxStam, player.stam + stamRegen() * dt);
     if (time - player.lastCombat > 5) player.hp = Math.min(player.maxHp, player.hp + 3 * dt);
+    // ficha criminal esfria com o tempo longe de novos crimes (a lei esquece devagar)
+    if (player.bounty > 0 && time - player.lastCrime > 12) player.bounty = Math.max(0, player.bounty - 1.5 * dt);
   }
   if (player.invulnT > 0) player.invulnT -= dt;
   gcd = Math.max(0, gcd - dt);
@@ -2444,7 +2520,7 @@ function tick() {
   updateWorld(time, dt, player.pos);
   if (started) {
     if (!net.connected) {
-      localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead }], SKY.nightF);
+      localSim.update(dt, [{ id: 0, x: player.pos.x, z: player.pos.z, dead: player.dead, wanted: isWanted() }], SKY.nightF);
       combatLocal.update(dt);
     }
     syncEnemies(dt);
@@ -2528,6 +2604,10 @@ function tick() {
     $('ptitle').textContent = playerTitle();
     $('xpfill').style.width = `${(player.xp / xpToNext(player.level)) * 100}%`;
     $('goldTxt').textContent = player.gold;
+    if (player.bounty > 0) {
+      $('wantedBadge').style.display = 'block';
+      $('wantedStars').textContent = '★'.repeat(Math.min(5, Math.ceil(player.bounty / 20)));
+    } else $('wantedBadge').style.display = 'none';
     $('cntHp').textContent = player.potions.hp;
     $('cntWill').textContent = player.potions.will;
     if (target) {

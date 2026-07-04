@@ -147,7 +147,11 @@ dungeon de formas completamente diferentes.
 - [x] **Casa comprável** ✅ (cabana em Pedravento, 500🪙): aluguel passivo de 25🪙/dia
       coletável na porta + descanso até o amanhecer (cura total) — Fable puro;
       falta: decoração e baú pessoal
-- [ ] Crimes: roubar/atacar aldeão → guardas, multa, prisão ou fama sombria
+- [x] **Crimes & guardas** ✅: atacar aldeão (Golpe sem alvo) ou vandalizar perto de
+      guarda → ficha de procura (bounty) + queda de moralidade; aldeão foge gritando;
+      guardas patrulham as cidades e **só caçam jogadores procurados** (aggro seletivo —
+      correto no co-op); ficha esfria com o tempo ou paga-se multa à Guilda; badge
+      "PROCURADO ★" na HUD
 
 **Pronto quando:** dá para passar uma sessão inteira sem combate — pescando, negociando,
 decorando a casa — e ainda assim progredir.

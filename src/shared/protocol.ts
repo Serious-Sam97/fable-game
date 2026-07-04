@@ -37,6 +37,7 @@ export interface PlayerState {
   aChest: string;
   aLegs: string;
   aBoots: string;
+  wanted: boolean;   // procurado — guardas o perseguem
 }
 
 export const CHAT_MAX = 200;
