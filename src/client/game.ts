@@ -10,7 +10,7 @@ import {
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
-  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, applyArmorTo, makeTroll, makeCrab,
+  makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, makeWeaponModel, applyArmorTo, makeTroll, makeCrab,
   makeShadowKnight, makeMalachi, makeDog,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
@@ -18,6 +18,7 @@ import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
 import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
 import { WEAPONS, ARMORS, RARITIES, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
 import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
+import { loadGLTF, Actor } from './assets';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
 
@@ -29,6 +30,43 @@ const SAVE_KEY = 'fable_save_v1';
 // ============================================================ player state
 const heroModel = makeHero();
 scene.add(heroModel.group);
+
+// ============================================================ modelo animado do herói (GLTF)
+let heroActor = null;
+const heroAnim = { lastSwing: 0, lastRoll: 0, wasDead: false };
+(async () => {
+  try {
+    const gltf = await loadGLTF('/models/characters/Knight_Male.gltf');
+    const scale = 2.5 / Actor.height(gltf); // herói ~2.5 unidades de altura
+    heroActor = new Actor(gltf, { scale, faceOffset: Math.PI });
+    // esconde o corpo procedural, mantendo halo/chifres (controlados pela moralidade)
+    const keep = new Set();
+    if (heroModel.halo) keep.add(heroModel.halo);
+    if (heroModel.horns) heroModel.horns.traverse((o) => keep.add(o));
+    heroModel.group.traverse((o) => { if (o.isMesh && !keep.has(o)) o.visible = false; });
+    heroModel.group.add(heroActor.wrapper);
+    heroActor.setBase(['Idle']);
+    updateHeroBody();
+  } catch (e) {
+    console.warn('modelo do herói falhou — usando procedural:', e);
+  }
+})();
+
+function driveHeroActor(dt, swingRose, rollRose) {
+  if (player.dead) {
+    if (!heroAnim.wasDead) { heroActor.trigger(['Death', 'Defeat']); heroAnim.wasDead = true; }
+  } else {
+    heroAnim.wasDead = false;
+    if (swingRose) {
+      const bow = equippedStats().kind === 'bow';
+      heroActor.trigger(bow ? ['Shoot_OneHanded', 'Shoot'] : ['SwordSlash', 'Punch'], { speed: 1.5 });
+    } else if (rollRose) {
+      heroActor.trigger(['Roll'], { speed: 1.3 });
+    }
+    heroActor.setBase(player.moving ? ['Run', 'Walk'] : ['Idle']);
+  }
+  heroActor.update(dt);
+}
 
 // ============================================================ cão fiel (companheiro de Fable)
 const dogModel = makeDog();
@@ -236,6 +274,22 @@ function movePlayerTo(nx, nz) {
 
 // Fable: o corpo conta a história — Força incha os ombros, Vontade acende tatuagens
 function updateHeroBody() {
+  const eq = equippedStats();
+  $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
+  if (heroActor) {
+    // arma encaixada no osso da mão direita (o three.js remove o ponto: Fist.R → FistR)
+    const bone = heroActor.bone('FistR');
+    if (bone) {
+      for (const c of [...bone.children]) if (c.userData.isWeapon) bone.remove(c);
+      const w = makeWeaponModel(player.equipped.wpn);
+      w.userData.isWeapon = true;
+      w.scale.setScalar(0.6);
+      w.position.set(0, 0.15, 0.02);
+      w.rotation.set(Math.PI / 2, 0, 0); // blade apontando para frente da mão
+      bone.add(w);
+    }
+    return;
+  }
   const str = player.disc.str.lvl, wil = player.disc.wil.lvl;
   const bulk = 1 + Math.min(str, 12) * 0.045;
   heroModel.shL.scale.setScalar(bulk);
@@ -249,8 +303,6 @@ function updateHeroBody() {
     head: player.armor.head?.arm, chest: player.armor.chest?.arm,
     legs: player.armor.legs?.arm, boots: player.armor.boots?.arm,
   });
-  const eq = equippedStats();
-  $('slot1Icon').textContent = eq.kind === 'bow' ? '🏹' : eq.def.icon;
 }
 
 // ============================================================ quests
@@ -2622,20 +2674,24 @@ function tick() {
   }
   heroModel.group.position.copy(player.pos);
 
-  // hero animation
+  // hero animation — rising edges de ataque/rolamento para disparar as animações
+  const swingRose = player.swingT > heroAnim.lastSwing + 0.001;
+  const rollRose = player.rollT > heroAnim.lastRoll + 0.001;
   const swing = Math.sin(player.walkT) * 0.65;
-  heroModel.legL.rotation.x = swing;
-  heroModel.legR.rotation.x = -swing;
-  heroModel.armL.rotation.x = -swing * 0.7;
-  if (player.blocking) {
-    heroModel.armR.rotation.x = -1.5; // arma erguida em guarda
-  } else if (player.swingT > 0) {
-    player.swingT -= dt;
-    heroModel.armR.rotation.x = -2.4 * (player.swingT / 0.35);
+  if (player.swingT > 0) player.swingT = Math.max(0, player.swingT - dt);
+  if (heroActor) {
+    driveHeroActor(dt, swingRose, rollRose);
   } else {
-    heroModel.armR.rotation.x = swing * 0.7;
+    heroModel.legL.rotation.x = swing;
+    heroModel.legR.rotation.x = -swing;
+    heroModel.armL.rotation.x = -swing * 0.7;
+    if (player.blocking) heroModel.armR.rotation.x = -1.5;
+    else if (player.swingT > 0) heroModel.armR.rotation.x = -2.4 * (player.swingT / 0.35);
+    else heroModel.armR.rotation.x = swing * 0.7;
+    heroModel.cape.rotation.x = 0.15 + Math.abs(swing) * 0.35 + Math.sin(time * 2) * 0.05;
   }
-  heroModel.cape.rotation.x = 0.15 + Math.abs(swing) * 0.35 + Math.sin(time * 2) * 0.05;
+  heroAnim.lastSwing = player.swingT;
+  heroAnim.lastRoll = player.rollT;
   if (heroModel.halo.visible) heroModel.halo.rotation.z = time * 1.5;
 
   // ---------- timers / regen ----------
@@ -2852,7 +2908,8 @@ addEventListener('beforeunload', saveGame);
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
   gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate,
-  gatherables, FORGE, CAULDRON, dog, digSpots, heroModel,
+  gatherables, FORGE, CAULDRON, dog, digSpots,
+  get heroActor() { return heroActor; }, heroModel,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },
