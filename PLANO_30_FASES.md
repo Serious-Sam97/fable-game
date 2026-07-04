@@ -75,12 +75,14 @@ O cão evolui (comandos, farejar mais coisas, defender, truques) e sincroniza no
 companheiros recrutáveis (falcão explorador, mercenário contratável). Vínculo/lealdade.
 **Pronto:** seu cão é icônico e outros jogadores o veem lutar ao seu lado.
 
-### Fase 11 — Modelos & animação esquelética ⬜⚠️
-Migrar dos modelos procedurais para malhas com esqueleto (GLTF), animação por state-machine
-com blending (idle↔walk↔run, ataques, rolar, morrer, pescar, sentar), IK de pés no terreno.
-*Nota: exige pipeline de assets (Blender/Mixamo/packs CC0) — hoje limitado pelo CSP que bloqueia
-download externo; provavelmente feito localmente e servido pelo próprio jogo.* **Pronto:** o
-herói corre e ataca com animações reais, não caixas girando.
+### Fase 11 — Modelos & animação esquelética ✅
+Migrado para malhas com esqueleto (GLTF, packs CC0 Quaternius/Kenney em public/models):
+todo o elenco (herói=Knight, cão=Husky, inimigos=Wolf/Goblin/Ninja/Soldier/Demon/Yeti,
+NPCs=Wizard/Witch/Casual/Pirate…) usa modelos animados com state-machine e crossfade
+(idle↔walk↔run, ataque, rolar, morrer), cel-shaded para bater com o look. Loader em
+assets.ts (loadGLTF + classe Actor com SkeletonUtils.clone + AnimationMixer), fallback
+gracioso pro procedural. **Pronto:** o herói corre e ataca com animações reais. *Resta:*
+IK de pés, props do mundo (árvores/casas Kenney), calibrar arma na mão.
 
 ---
 
