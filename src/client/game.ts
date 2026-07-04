@@ -411,6 +411,38 @@ const myPid = () => (net.connected ? net.id : 0);
 // beasts olham por +X na malha; a sim guarda o ângulo puro e o cliente compensa
 const FACE_X = new Set(FACE_X_TYPES);
 
+// mapa de inimigos → modelo GLTF animado (os sem entrada seguem procedurais: besouros, caranguejo)
+const ENEMY_GLTF = {
+  lobo:        { url: '/models/animals/Wolf.gltf', h: 2.0, walk: ['Gallop', 'Walk'], attack: ['Attack'] },
+  lobo_alfa:   { url: '/models/animals/Wolf.gltf', h: 2.9, walk: ['Gallop', 'Walk'], attack: ['Attack'] },
+  hobbe:       { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch', 'SwordSlash'] },
+  xama:        { url: '/models/characters/Goblin_Male.gltf', h: 2.0, walk: ['Run', 'Walk'], attack: ['Punch'] },
+  hobbe_chefe: { url: '/models/characters/Goblin_Male.gltf', h: 2.7, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
+  bandido:     { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
+  arqueiro:    { url: '/models/characters/Ninja_Male.gltf', h: 2.6, walk: ['Run', 'Walk'], attack: ['Shoot_OneHanded', 'SwordSlash'] },
+  chefe:       { url: '/models/characters/Ninja_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash'] },
+  guarda:      { url: '/models/characters/Soldier_Male.gltf', h: 2.9, walk: ['Run', 'Walk'], attack: ['SwordSlash', 'Punch'] },
+  cavaleiro_sombrio: { url: '/models/characters/Knight_Male.gltf', h: 3.0, walk: ['Run', 'Walk'], attack: ['SwordSlash'], tint: 0x565663 },
+  malachi:     { url: '/models/characters/Knight_Golden_Male.gltf', h: 3.4, walk: ['Run', 'Walk'], attack: ['SwordSlash'] },
+  balverine:   { url: '/models/monsters/Big/glTF/Demon.gltf', h: 4.2, walk: ['Run', 'Walk'], attack: ['Punch'] },
+  troll:       { url: '/models/monsters/Big/glTF/Yeti.gltf', h: 5.0, walk: ['Walk', 'Run'], attack: ['Punch'] },
+};
+function loadEnemyActor(v) {
+  const cfg = ENEMY_GLTF[v.type];
+  if (!cfg || v.actorTried) return;
+  v.actorTried = true;
+  v.cfg = cfg;
+  loadGLTF(cfg.url).then((gltf) => {
+    const scale = cfg.h / Actor.height(gltf);
+    const actor = new Actor(gltf, { scale, faceOffset: Math.PI });
+    if (cfg.tint) actor.root.traverse((o) => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.color.multiplyScalar(0.6).lerp(new THREE.Color(cfg.tint), 0.5)); });
+    v.actor = actor;
+    v.model.group.visible = false;
+    scene.add(actor.wrapper);
+    actor.setBase(['Idle']);
+  }).catch(() => { /* mantém procedural */ });
+}
+
 function ensureEnemyView(s) {
   let v = enemyViews.get(s.id);
   if (v) return v;
@@ -428,8 +460,10 @@ function ensureEnemyView(s) {
     state: s.state, walkT: 0, swingT: 0, deadTimer: 0,
     isLeader: s.type === 'chefe',
     plate, plateFill: plate.querySelector('.phpfill'), plateName: plate.querySelector('.pname'),
+    actor: null, prevX: s.x, prevZ: s.z, died: false,
   };
   enemyViews.set(s.id, v);
+  loadEnemyActor(v);
   return v;
 }
 
@@ -455,30 +489,49 @@ function syncEnemies(dt) {
     v.state = s.state;
     v.walkT = s.walkT;
     v.pos.y = terrainHeight(v.pos.x, v.pos.z) + (s.state === 'leap' ? Math.sin(Math.min(1, s.leapK) * Math.PI) * 4.5 : 0);
-    v.model.group.position.copy(v.pos);
-    v.model.group.rotation.y = v.ry - (FACE_X.has(v.type) ? Math.PI / 2 : 0);
-    if (s.state === 'dead') {
-      v.deadTimer += dt;
-      v.model.group.rotation.z = Math.min(Math.PI / 2, v.deadTimer * 4);
-    } else {
-      v.deadTimer = 0;
-      v.model.group.rotation.z = 0;
-    }
-    v.model.group.rotation.x = s.state === 'surrender' ? 0.5 : 0;
     if (s.state === 'surrender') v.plateName.style.color = '#ffe07a';
-    const ls = Math.sin(v.walkT) * 0.6;
-    if (v.model.legs) {
-      for (let i = 0; i < v.model.legs.length; i++) v.model.legs[i].rotation.x = i % 2 ? ls : -ls;
+
+    if (v.actor) {
+      // ---- modelo GLTF animado ----
+      const moved = Math.hypot(v.pos.x - v.prevX, v.pos.z - v.prevZ) > 0.02;
+      v.actor.wrapper.position.copy(v.pos);
+      v.actor.wrapper.rotation.set(0, v.ry, 0);
+      if (s.state === 'dead') {
+        if (!v.died) { v.actor.trigger(['Death']); v.died = true; }
+      } else {
+        v.died = false;
+        const moving = moved || s.state === 'chase' || s.state === 'return' || s.state === 'flee';
+        v.actor.setBase(moving ? v.cfg.walk : ['Idle']);
+      }
+      v.actor.update(dt);
+    } else {
+      // ---- modelo procedural (besouros, caranguejo, ou GLTF ainda carregando) ----
+      v.model.group.position.copy(v.pos);
+      v.model.group.rotation.y = v.ry - (FACE_X.has(v.type) ? Math.PI / 2 : 0);
+      if (s.state === 'dead') {
+        v.deadTimer += dt;
+        v.model.group.rotation.z = Math.min(Math.PI / 2, v.deadTimer * 4);
+      } else {
+        v.deadTimer = 0;
+        v.model.group.rotation.z = 0;
+      }
+      v.model.group.rotation.x = s.state === 'surrender' ? 0.5 : 0;
+      const ls = Math.sin(v.walkT) * 0.6;
+      if (v.model.legs) {
+        for (let i = 0; i < v.model.legs.length; i++) v.model.legs[i].rotation.x = i % 2 ? ls : -ls;
+      }
+      if (v.model.armR) {
+        if (v.swingT > 0) { v.swingT -= dt; v.model.armR.rotation.x = -2.2 * (v.swingT / 0.3); }
+        else v.model.armR.rotation.x = ls * 0.5;
+        if (v.model.armL) v.model.armL.rotation.x = -ls * 0.5;
+      }
     }
-    if (v.model.armR) {
-      if (v.swingT > 0) { v.swingT -= dt; v.model.armR.rotation.x = -2.2 * (v.swingT / 0.3); }
-      else v.model.armR.rotation.x = ls * 0.5;
-      if (v.model.armL) v.model.armL.rotation.x = -ls * 0.5;
-    }
+    v.prevX = v.pos.x; v.prevZ = v.pos.z;
   }
   for (const [id, v] of enemyViews) {
     if (!seen.has(id)) {
       scene.remove(v.model.group);
+      if (v.actor) scene.remove(v.actor.wrapper);
       v.plate.remove();
       enemyViews.delete(id);
       if (target === v) setTarget(null);
@@ -499,6 +552,7 @@ function processSimEvents() {
         break;
       case 'eatk': {
         if (v) v.swingT = 0.3;
+        if (v && v.actor && v.cfg) v.actor.trigger(v.cfg.attack, { speed: 1.4 });
         // flecha visual dos atiradores — de quem atira até a vítima
         if (v && v.def.ranged) {
           const victim = ev.pid === myPid() ? player.pos : remoteHeroes.get(ev.pid)?.model.group.position;
