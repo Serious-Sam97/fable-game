@@ -349,21 +349,33 @@ function addNpc(name, model, x, z, opts = {}) {
     postRot: opts.rot ?? 0,
     bed: opts.bed ? new THREE.Vector3(opts.bed[0], 0, opts.bed[1]) : new THREE.Vector3(x, y, z),
     wTarget: null, wTimer: rnd(x, z) * 5, sayT: 4 + rnd(z, x) * 8, asleep: false,
+    actor: null,
   };
   npcs.push(npc);
+  // modelo GLTF animado (o actor.wrapper vira filho do group → herda pos/rotação/visibilidade)
+  if (opts.gltf) {
+    loadGLTF(opts.gltf).then((gltf) => {
+      const scale = 2.5 / Actor.height(gltf);
+      npc.actor = new Actor(gltf, { scale, faceOffset: Math.PI });
+      model.group.traverse((o) => { if (o.isMesh) o.visible = false; }); // esconde o corpo procedural
+      model.group.add(npc.actor.wrapper);
+      npc.actor.setBase(['Idle']);
+    }).catch(() => { /* mantém procedural */ });
+  }
   return npc;
 }
 
-// bed = casa onde o NPC dorme à noite (perto das cabanas)
-const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster', bed: [-13, -3] });
-const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper', bed: [-9, 11] });
-const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor', bed: [14, 7] });
-addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true, bed: [-9, 11] });
-addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true, bed: [13, -9] });
+// bed = casa onde o NPC dorme à noite; gltf = modelo animado (fallback procedural)
+const CH = '/models/characters/';
+const guildmaster = addNpc('Mestre da Guilda', makeVillager({ robe: 0x2a4a7a, beard: true, staff: true, hair: 0xd8d8d8 }), 3, -6, { rot: 2.6, role: 'guildmaster', bed: [-13, -3], gltf: CH + 'Wizard.gltf' });
+const whisper = addNpc('Whisper', makeVillager({ robe: 0xc8a02a, skin: 0x7a5236, hair: 0x1a1a1a, staff: true }), -7, 4, { rot: 1.2, role: 'whisper', bed: [-9, 11], gltf: CH + 'Witch.gltf' });
+const barnum = addNpc('Barnum', makeVillager({ robe: 0x6a4a2e, hat: 'top' }), 9, 2, { rot: -0.9, role: 'vendor', bed: [14, 7], gltf: CH + 'OldClassy_Male.gltf' });
+addNpc('Aldeã Rosie', makeVillager({ robe: 0x8a3a5a, hair: 0xb87a3a }), -4, 10, { wander: true, bed: [-9, 11], gltf: CH + 'Casual_Female.gltf' });
+addNpc('Aldeão Tobias', makeVillager({ robe: 0x4a6a3a, hair: 0x5a3a1a }), 12, -4, { wander: true, bed: [13, -9], gltf: CH + 'Casual_Male.gltf' });
 // Porto Bruma
-const jonas = addNpc('Pescador Jonas', makeVillager({ robe: 0x3a5a6e, hair: 0x8a8a7a, beard: true }), PORT.x + 14, PORT.z + 1, { rot: -1.6, role: 'fisher', bed: [214, 30] });
-addNpc('Mercadora Sal', makeVillager({ robe: 0x6e3a5a, hair: 0x2a2a2a, hat: 'hood' }), 221, 47.8, { rot: 0.6, role: 'vendor2', bed: [212, 50] });
-addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x - 4, PORT.z + 10, { wander: true, bed: [228, 26] });
+const jonas = addNpc('Pescador Jonas', makeVillager({ robe: 0x3a5a6e, hair: 0x8a8a7a, beard: true }), PORT.x + 14, PORT.z + 1, { rot: -1.6, role: 'fisher', bed: [214, 30], gltf: CH + 'Pirate_Male.gltf' });
+addNpc('Mercadora Sal', makeVillager({ robe: 0x6e3a5a, hair: 0x2a2a2a, hat: 'hood' }), 221, 47.8, { rot: 0.6, role: 'vendor2', bed: [212, 50], gltf: CH + 'Pirate_Female.gltf' });
+addNpc('Marujo Bento', makeVillager({ robe: 0x4a5a3a, hair: 0x3a2a1a }), PORT.x - 4, PORT.z + 10, { wander: true, bed: [228, 26], gltf: CH + 'Worker_Male.gltf' });
 
 const shopsOpen = () => SKY.nightF < 0.55; // lojas fecham à noite
 
@@ -2807,7 +2819,15 @@ function tick() {
     processSimEvents();
     for (const c of drainChat()) addChatLine(c.name, c.text, c.pid === 0);
     for (const c of chickens) updateChicken(c, dt);
-    for (const n of npcs) updateNpc(n, dt);
+    for (const n of npcs) {
+      const px = n.pos.x, pz = n.pos.z;
+      updateNpc(n, dt);
+      if (n.actor) {
+        const moved = Math.hypot(n.pos.x - px, n.pos.z - pz) > 0.004;
+        n.actor.setBase(moved ? (n.fleeT > 0 ? ['Run', 'Walk'] : ['Walk']) : ['Idle']);
+        n.actor.update(dt);
+      }
+    }
     updateDog(dt);
     updateFishing(dt);
     // música adaptativa: combate quando algum inimigo está caçando você por perto
