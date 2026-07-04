@@ -58,7 +58,13 @@ export interface NetCallbacks {
 export function connectNet(getState: () => PlayerState, cbs: NetCallbacks) {
   const open = () => {
     try {
-      ws = new WebSocket(`ws://${location.hostname}:${NET_PORT}`);
+      // Em produção (HTTPS via Cloudflare) o socket sobe num subdomínio dedicado
+      // com wss. Precisa ser de nível único (fable-ws.serious-sam.dev) porque o
+      // certificado Universal SSL da Cloudflare não cobre *.fable.serious-sam.dev.
+      const url = location.protocol === 'https:'
+        ? `wss://fable-ws.serious-sam.dev`
+        : `ws://${location.hostname}:${NET_PORT}`;
+      ws = new WebSocket(url);
     } catch {
       return; // sem servidor — modo solo
     }
