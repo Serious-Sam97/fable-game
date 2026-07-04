@@ -124,7 +124,10 @@ dungeon de formas completamente diferentes.
 - [x] Costa com praia/porto ✅ (oceano, areia, píer); outros biomas pendentes
 - [x] **2ª cidade — Porto Bruma** ✅ (docas, farol com facho giratório, barcos,
       3 NPCs: Pescador Jonas c/ quest, Mercadora Sal c/ loja, Marujo Bento)
-- [ ] **Dungeons com interiores**: cavernas de hobbes, cripta, forte bandido, minas
+- [x] **Dungeon com interior — Caverna dos Hobbes** ✅: câmara rochosa com teto
+      (penumbra + tochas), boca de caverna que teleporta pra dentro/fora, mini-boss
+      Capitão Hobbe que dropa a Chave de Prata, baú trancado com tesouro (Martelo
+      Épico + ouro + poções); faltam cripta, forte bandido, minas
 - [x] **Cullis Gates** ✅ — fast travel vila ↔ porto (F no portal, efeito + som)
 
 ### Vida

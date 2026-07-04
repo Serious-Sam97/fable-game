@@ -391,7 +391,7 @@ export function makeBandit({ leader = false, archer = false } = {}) {
 }
 
 // ---------------------------------------------------------------- hobbe
-export function makeHobbe({ shaman = false } = {}) {
+export function makeHobbe({ shaman = false, captain = false } = {}) {
   const g = new THREE.Group();
   const mats = [];
   const M = matMaker(mats);
@@ -456,6 +456,22 @@ export function makeHobbe({ shaman = false } = {}) {
     club.position.set(0, -0.62, 0.1);
     club.rotation.x = Math.PI * 0.9;
     armR.add(club);
+  }
+  if (captain) {
+    // coroa tosca de ouro e capa esfarrapada
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.18, 8), basic(0xe8c84a));
+    crown.position.y = 0.4;
+    head.add(crown);
+    for (let i = 0; i < 5; i++) {
+      const spike = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 4), basic(0xffe07a));
+      const a = (i / 5) * Math.PI * 2;
+      spike.position.set(Math.cos(a) * 0.32, 0.55, Math.sin(a) * 0.32);
+      head.add(spike);
+    }
+    const cape = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.15), new THREE.MeshLambertMaterial({ color: 0x6a1a2a, side: THREE.DoubleSide }));
+    cape.position.set(0, 1.0, -0.34); cape.geometry.translate(0, -0.45, 0);
+    g.add(cape);
+    g.scale.setScalar(1.28);
   }
   g.add(belly, chest, head, armL, armR, legL, legR);
   shadows(g);

@@ -55,6 +55,10 @@ export const ENEMY_DEFS: Record<string, EnemyDef> = {
     name: 'Hobbe', lvl: 3, hp: 85, dmg: [7, 11], xp: 55, gold: [4, 9],
     renown: 1, speed: 4.2, aggro: 12, atkR: 1.9, atkCd: 1.5, icon: '👺', plateH: 2.0, respawn: 22,
   },
+  hobbe_chefe: {
+    name: 'Capitão Hobbe', lvl: 5, hp: 300, dmg: [11, 17], xp: 220, gold: [30, 50],
+    renown: 4, speed: 4.6, aggro: 16, atkR: 2.2, atkCd: 1.5, icon: '👑', plateH: 2.6, respawn: 90,
+  },
   balverine: {
     name: 'Balverine Ancião', lvl: 9, hp: 620, dmg: [16, 24], xp: 420, gold: [90, 120],
     renown: 12, speed: 6.4, aggro: 26, atkR: 2.8, atkCd: 1.6, icon: '👹', plateH: 4.4, respawn: 0,

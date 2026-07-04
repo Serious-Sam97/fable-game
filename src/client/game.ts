@@ -5,7 +5,7 @@ import {
 } from './core';
 import {
   WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
-  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, colliders, forSaleSign,
+  chests, MAP_FEATURES, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, GATES, CAVE, colliders, forSaleSign, lockedChest,
 } from './world';
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
@@ -52,6 +52,7 @@ const player = {
   blocking: false, blockStartT: -99,
   fish: 0,                                  // peixes na sacola (vendáveis)
   ownedHouse: false, rentDay: 0,            // casa comprável (Fable) + aluguel por dia
+  silverKey: false,                         // Chave de Prata do Capitão Hobbe
 };
 const hasTalent = (k) => !!player.talents[k];
 
@@ -298,6 +299,7 @@ const MAKERS = {
   arqueiro: () => makeBandit({ archer: true }),
   chefe: () => makeBandit({ leader: true }),
   hobbe: () => makeHobbe(),
+  hobbe_chefe: () => makeHobbe({ captain: true }),
   xama: () => makeHobbe({ shaman: true }),
   balverine: () => makeBalverine(),
   besouro_bomba: () => makeBeetle({ bomb: true }),
@@ -656,6 +658,13 @@ function onEnemyDeath(e, mine, killerPid) {
     if (e.def.renown) gainRenown(e.def.renown);
     const drop = rollDrop(e.type, e.def.lvl);
     if (drop) addItem(drop);
+    if (e.type === 'hobbe_chefe' && !player.silverKey) {
+      player.silverKey = true;
+      toast('🗝️ O Capitão Hobbe largou a Chave de Prata!');
+      floatText(e.pos, '🗝️ Chave de Prata', '#d8e0ff', 18);
+      beep(1100, 0.15, 'sine', 0.06); setTimeout(() => beep(1500, 0.2, 'sine', 0.06), 130);
+      saveGame();
+    }
     questCredit(e);
   } else if (killerPid > 0 && player.pos.distanceTo(e.pos) < 30) {
     // caçada em grupo: aliado perto ganha metade do XP e crédito de missão
@@ -1463,6 +1472,46 @@ function openHouseDialog() {
   }
 }
 
+// ============================================================ Caverna dos Hobbes
+function caveTeleport(x, z, title, sub) {
+  ringEffect(player.pos, 0x8a6d4a, 5);
+  noiseBurst(0.25, 0.05);
+  player.pos.set(x, terrainHeight(x, z), z);
+  ringEffect(player.pos, 0x8a6d4a, 5);
+  centerMsg(title, sub);
+}
+function enterCave() {
+  caveTeleport(CAVE.x + 16, CAVE.z + 16, 'Caverna dos Hobbes', 'A escuridão cheira a mofo e fumaça de tocha…');
+  beep(90, 0.6, 'sawtooth', 0.06, -30);
+}
+function exitCave() {
+  caveTeleport(CAVE.entX, CAVE.entZ + 4, 'Colinas de Pedravento', 'A luz do dia recebe você de volta');
+  beep(500, 0.4, 'sine', 0.05, 200);
+}
+function openLockedChest() {
+  if (lockedChest.opened) return;
+  if (!player.silverKey) {
+    errorMsg('Trancado — a Chave de Prata está com o Capitão Hobbe');
+    beep(140, 0.15, 'square', 0.04);
+    return;
+  }
+  lockedChest.opened = true;
+  player.silverKey = false;
+  if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
+  // tesouro digno de dungeon
+  const gold = 250;
+  player.gold += gold;
+  player.potions.hp += 2; player.potions.will += 1;
+  addItem({ wpn: 'martelo', rar: 'epico' });
+  toast(`🏆 Tesouro da Caverna: ${gold} 🪙, poções e Martelo de Guerra (Épico)!`);
+  centerMsg('O Tesouro dos Hobbes!', 'Martelo de Guerra Épico + 250 ouro');
+  ringEffect(player.pos, 0xffd24a, 5);
+  beep(660, 0.15, 'sine', 0.06); setTimeout(() => beep(880, 0.15, 'sine', 0.06), 150);
+  setTimeout(() => beep(1180, 0.3, 'sine', 0.06), 300);
+  gainRenown(6);
+  saveGame();
+}
+
 function nearestInteract() {
   let best = null;
   const consider = (dist, max, label, cb) => {
@@ -1488,6 +1537,17 @@ function nearestInteract() {
   consider(dHouse, 3.2, player.ownedHouse ? (houseRentDue() > 0 ? 'Entrar em casa 🏠 (aluguel!)' : 'Entrar em casa 🏠') : 'Ver casa à venda 🏠', openHouseDialog);
   if (!fishing.active && nearWater()) {
     consider(2.0, 3, 'Pescar 🎣', startFishing); // prioridade alta perto d'água
+  }
+  // boca da caverna (mundo aberto) ↔ interior
+  const dMouth = Math.hypot(CAVE.entX - player.pos.x, CAVE.entZ - player.pos.z);
+  consider(dMouth, 3.5, 'Entrar na Caverna dos Hobbes 🕳️', enterCave);
+  const dCaveExit = Math.hypot((CAVE.x + 16) - player.pos.x, (CAVE.z + 16) - player.pos.z);
+  consider(dCaveExit, 3.5, 'Sair da caverna ☀️', exitCave);
+  // baú trancado
+  if (!lockedChest.opened) {
+    consider(Math.hypot(lockedChest.x - player.pos.x, lockedChest.z - player.pos.z), 3.2,
+      player.silverKey ? 'Destrancar o baú 🗝️' : 'Baú trancado (precisa da Chave de Prata)',
+      openLockedChest);
   }
   for (const g of GATES) {
     consider(Math.hypot(g.x - player.pos.x, g.z - player.pos.z), 3.8, 'Atravessar o Portal Cullis ✨', () => travelGate(g));
@@ -1652,6 +1712,7 @@ function buildSaveData() {
     disc: player.disc, inventory: player.inventory, equipped: player.equipped, armor: player.armor,
     talents: player.talents,
     fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
+    silverKey: player.silverKey, lockedChestOpened: lockedChest.opened,
   };
 }
 function saveGame() {
@@ -1680,6 +1741,11 @@ function applySaveData(data) {
   player.fish = data.fish ?? 0;
   player.ownedHouse = !!data.ownedHouse;
   player.rentDay = data.rentDay ?? 0;
+  player.silverKey = !!data.silverKey;
+  if (data.lockedChestOpened) {
+    lockedChest.opened = true;
+    if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
+  }
   recomputeMaxes();
   player.hp = clamp(data.hp ?? player.maxHp, 1, player.maxHp);
   player.will = clamp(data.will ?? player.maxWill, 0, player.maxWill);

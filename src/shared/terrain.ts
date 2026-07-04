@@ -14,6 +14,7 @@ export const ORCHARD = { x: 55, z: 25 };
 export const DARK_FOREST = { x: -15, z: 95 };
 export const PORT = { x: 222, z: 40 };            // Porto Bruma, na costa leste
 export const CRAB_BEACH = { x: 232, z: 90 };      // praia dos caranguejos
+export const CAVE = { x: -140, z: 190, entX: -18, entZ: 118 }; // Caverna dos Hobbes + boca da caverna
 export const GATES = [
   { x: -14, z: -20 },                             // Portal Cullis da vila
   { x: 208, z: 28 },                              // Portal Cullis do porto

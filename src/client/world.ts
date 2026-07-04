@@ -1,12 +1,15 @@
 import * as THREE from 'three';
 import { scene, hash, vnoise, rnd, smoothstep, clamp, lerp, SKY } from './core';
 import {
-  WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES,
+  WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE,
   terrainHeight, distToPath,
 } from '../shared/terrain';
 
 // terreno é compartilhado com o servidor (shared/terrain); re-exportado para o resto do cliente
-export { WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, terrainHeight, distToPath };
+export { WORLD_R, LAKE, SEA, WATERS, BANDIT_CAMP, ORCHARD, DARK_FOREST, PORT, CRAB_BEACH, GATES, CAVE, terrainHeight, distToPath };
+
+// baú trancado da caverna — o jogo precisa saber onde ele está (chave de prata)
+export const lockedChest = { x: CAVE.x, z: CAVE.z - 13, opened: false, group: null };
 
 // clima — determinístico a partir da hora do mundo: todos os clientes veem a mesma chuva
 export const weather = { rainF: 0, raining: false };
@@ -38,6 +41,7 @@ export function buildWorld() {
   buildVillage();
   buildPort();
   buildGates();
+  buildCave();
   buildBanditCamp();
   buildOrchard();
   buildDarkForest();
@@ -618,6 +622,116 @@ function buildGates() {
   }
 }
 
+// ------------------------------------------------ Caverna dos Hobbes (dungeon)
+const caveTorches = [];
+function buildCave() {
+  const { x: cx, z: cz } = CAVE;
+  const rockMat = lambert(0x4a4640);
+  const rockMat2 = lambert(0x3a3630);
+  const R = 20; // raio da câmara
+
+  // parede rochosa em anel, com uma abertura (corredor de entrada) ao sul
+  const y0 = terrainHeight(cx, cz);
+  for (let i = 0; i < 30; i++) {
+    const a = (i / 30) * Math.PI * 2;
+    // deixa um vão ao sul (perto de a = PI/2, lado +z) para o corredor
+    if (a > 1.2 && a < 1.95) continue;
+    const wx = cx + Math.cos(a) * R, wz = cz + Math.sin(a) * R;
+    const s = 3.2 + rnd(i, 400) * 2.2;
+    const boulder = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), i % 2 ? rockMat : rockMat2);
+    boulder.position.set(wx, y0 + s * 0.35, wz);
+    boulder.rotation.set(rnd(i, 401) * 3, rnd(i, 402) * 3, rnd(i, 403));
+    boulder.castShadow = true; boulder.receiveShadow = true;
+    scene.add(boulder);
+    colliders.push({ x: wx, z: wz, r: s * 0.8 });
+  }
+  // teto de rocha (domo achatado) — bloqueia o céu → penumbra + sombra
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(R + 2, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2), rockMat2);
+  dome.scale.y = 0.55;
+  dome.material = new THREE.MeshLambertMaterial({ color: 0x2a2620, side: THREE.BackSide });
+  dome.position.set(cx, y0 + 1, cz);
+  dome.castShadow = true;
+  scene.add(dome);
+  // piso escuro
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(R, 28), lambert(0x2e2a24));
+  floor.rotateX(-Math.PI / 2);
+  floor.position.set(cx, y0 + 0.05, cz);
+  floor.receiveShadow = true;
+  scene.add(floor);
+  // estalagmites
+  for (let i = 0; i < 14; i++) {
+    const a = rnd(i, 410) * Math.PI * 2, r = rnd(i, 411) * (R - 3);
+    const sx = cx + Math.cos(a) * r, sz = cz + Math.sin(a) * r;
+    if (Math.hypot(sx - cx, sz - (cz - 13)) < 3) continue; // deixa o baú livre
+    const h = 1 + rnd(i, 412) * 2.5;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.35 + rnd(i, 413) * 0.3, h, 6), rockMat);
+    spike.position.set(sx, y0 + h / 2, sz);
+    spike.castShadow = true;
+    scene.add(spike);
+    if (h > 2) colliders.push({ x: sx, z: sz, r: 0.4 });
+  }
+  // tochas nas paredes
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.3;
+    const tx = cx + Math.cos(a) * (R - 2), tz = cz + Math.sin(a) * (R - 2);
+    const ty = terrainHeight(tx, tz);
+    const bracket = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.2, 5), lambert(0x2a2118));
+    bracket.position.set(tx, ty + 1.4, tz);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.6, 6), new THREE.MeshBasicMaterial({ color: 0xff9a3a }));
+    flame.position.set(tx, ty + 2.1, tz);
+    const light = new THREE.PointLight(0xffa040, 2.2, 16);
+    light.position.set(tx, ty + 2.2, tz);
+    scene.add(bracket, flame, light);
+    caveTorches.push({ flame, light });
+  }
+  // baú trancado (tesouro) — precisa da Chave de Prata
+  {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.85, 1.0), lambert(0x6b4a2a));
+    base.position.y = 0.42;
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 1.0), lambert(0x7a5634));
+    lid.position.y = 0.95;
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.14, 1.06), lambert(0xd8d8e0));
+    trim.position.y = 0.72;
+    const lock = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.3, 0.14), lambert(0xe8e8f0));
+    lock.position.set(0, 0.72, 0.53);
+    const glow = new THREE.PointLight(0xd8e0ff, 1.0, 6);
+    glow.position.set(0, 1.4, 0);
+    g.add(base, lid, trim, lock, glow);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const ly = terrainHeight(lockedChest.x, lockedChest.z);
+    g.position.set(lockedChest.x, ly, lockedChest.z);
+    scene.add(g);
+    lockedChest.group = g;
+    lockedChest.lid = lid;
+    colliders.push({ x: lockedChest.x, z: lockedChest.z, r: 0.9 });
+  }
+  MAP_FEATURES.push({ x: cx, z: cz, color: '#2a2620', r: 8 });
+  // marco da boca da caverna no mundo aberto
+  {
+    const { entX, entZ } = CAVE;
+    const g = new THREE.Group();
+    const ey = terrainHeight(entX, entZ);
+    for (const sx of [-1.6, 1.6]) {
+      const pillar = new THREE.Mesh(new THREE.DodecahedronGeometry(1.6, 0), rockMat);
+      pillar.position.set(sx, 1.4, 0);
+      g.add(pillar);
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(4.6, 1.2, 1.4), rockMat2);
+    lintel.position.set(0, 2.9, 0);
+    const dark = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 3), new THREE.MeshBasicMaterial({ color: 0x0a0806 }));
+    dark.position.set(0, 1.5, 0.1);
+    g.add(lintel, dark);
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    g.position.set(entX, ey, entZ);
+    g.rotation.y = Math.PI;
+    scene.add(g);
+    colliders.push({ x: entX - 1.6, z: entZ, r: 1.2 });
+    colliders.push({ x: entX + 1.6, z: entZ, r: 1.2 });
+    MAP_FEATURES.push({ x: entX, z: entZ, color: '#1a1610', r: 3 });
+  }
+}
+
 // ------------------------------------------------ chuva
 function buildRain() {
   const N = 1400;
@@ -889,6 +1003,11 @@ export function updateWorld(time, dt, playerPos) {
   for (const gl of gateGlows) {
     gl.rotation.z = time * 0.8;
     gl.material.opacity = 0.45 + Math.sin(time * 2.2) * 0.15;
+  }
+  // tochas da caverna bruxuleando
+  for (const t of caveTorches) {
+    t.flame.scale.y = 1 + Math.sin(time * 12 + t.light.position.x) * 0.3;
+    t.light.intensity = 2 + Math.sin(time * 10 + t.light.position.z) * 0.5;
   }
   // facho do farol varrendo o mar à noite
   if (lightBeam) {
