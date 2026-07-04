@@ -193,11 +193,15 @@ finais visivelmente diferentes.
 - [ ] **Modelos GLTF com esqueleto** — packs CC0 (Quaternius, Kenney) + retoques no Blender;
       animações via Mixamo (andar, correr, rolar, 3 ataques, morrer, pescar, sentar…)
 - [ ] **Animation state machine** com blending (idle↔walk↔run, upper/lower body separados)
-- [ ] Shaders: água com reflexo/fresnel, **vento na grama e árvores** (vertex shader),
-      neblina volumétrica fake nos vales, god rays no amanhecer
-- [ ] Pós-processamento: SSAO leve, color grading por bioma/hora, vinheta dinâmica
-- [ ] **Áudio real**: samples ambientes (pássaros, vento, taverna), passos por superfície,
-      **música adaptativa em camadas** (explorar → tensão → combate → vitória)
+- [x] **Vento na grama e árvores** ✅ (vertex shader via onBeforeCompile: grama inclina
+      pela altura do vértice + rajadas; árvores balançam da base) + grama muito mais densa
+      (2600 tufos, variação de cor); água com reflexo/fresnel e god rays pendentes
+- [x] **Céu com gradiente** ✅ (domo com shader zênite→horizonte + brilho do sol,
+      transiciona dia/crepúsculo/noite — pôr do sol alaranjado dramático); SSAO/color
+      grading pendentes (bloom + tone mapping ACES já existem)
+- [~] **Música adaptativa** ✅ (camada de combate: acordes tensos + tambor pulsante quando
+      um inimigo caça você por perto, volta ao alaúde tranquilo ao sair); samples ambientes
+      e passos por superfície pendentes
 - [ ] **UI overhaul estilo pergaminho/Fable**: mapa-múndi desenhado à mão, journal de
       missões ilustrado, tooltips ricos
 - [ ] **Suporte a gamepad** + remapeamento de teclas

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
   canvas, scene, camera, composer, SKY, updateSky, skyHour,
-  beep, noiseBurst, startMusic, toggleMusic, clamp, lerp, rnd,
+  beep, noiseBurst, startMusic, toggleMusic, setCombatMusic, clamp, lerp, rnd,
 } from './core';
 import {
   WORLD_R, WATERS, terrainHeight, buildWorld, updateWorld, weather,
@@ -2660,6 +2660,12 @@ function tick() {
     for (const n of npcs) updateNpc(n, dt);
     updateDog(dt);
     updateFishing(dt);
+    // música adaptativa: combate quando algum inimigo está caçando você por perto
+    let threat = false;
+    for (const e of enemies) {
+      if ((e.state === 'chase' || e.state === 'attack' || e.state === 'leap') && e.pos.distanceTo(player.pos) < 24) { threat = true; break; }
+    }
+    setCombatMusic(threat ? 1 : 0);
     if (forSaleSign) forSaleSign.visible = !player.ownedHouse;
     for (const node of gatherables) {
       if (node.cooldown > 0) {

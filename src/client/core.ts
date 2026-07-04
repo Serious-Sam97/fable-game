@@ -139,15 +139,24 @@ export function noiseBurst(dur = 0.3, vol = 0.08) {
 }
 
 // -------- gentle generative music (Fable-ish lute & pad) --------
-export const music = { on: true };
+export const music = { on: true, combat: 0 }; // combat: 0 explorar, 1 combate
 const CHORDS = [
   [220.0, 261.63, 329.63],   // Am
   [174.61, 261.63, 349.23],  // F
   [196.0, 246.94, 392.0],    // G
   [164.81, 246.94, 329.63],  // Em
 ];
+// acordes de combate — mais tensos (Dm, A, Bb, E) e tempo mais rápido
+const CHORDS_COMBAT = [
+  [146.83, 220.0, 293.66],   // Dm
+  [220.0, 277.18, 329.63],   // A
+  [233.08, 293.66, 349.23],  // Bb
+  [164.81, 207.65, 246.94],  // E
+];
 const PENTA = [440, 523.25, 587.33, 659.25, 783.99, 880];
 let chordI = 0, musicStarted = false;
+/** define intensidade de combate (0..1) — o jogo chama conforme inimigos aggro */
+export function setCombatMusic(v) { music.combat = v; }
 
 function pad(freq, dur = 4.6, vol = 0.016) {
   const ac = ensureAudio(); if (!ac) return;
@@ -173,16 +182,36 @@ function pluck(freq, vol = 0.03) {
     o.start(); o.stop(ac.currentTime + 0.7);
   } catch (e) { /* ignore */ }
 }
+function drum(vol = 0.05) {
+  const ac = ensureAudio(); if (!ac) return;
+  try {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(120, ac.currentTime);
+    o.frequency.exponentialRampToValueAtTime(45, ac.currentTime + 0.18);
+    g.gain.setValueAtTime(vol, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.2);
+    o.connect(g).connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + 0.2);
+  } catch (e) { /* ignore */ }
+}
 function musicTick() {
+  const inCombat = music.combat > 0.5;
   if (music.on && document.visibilityState === 'visible') {
-    const ch = CHORDS[chordI % CHORDS.length];
+    const pool = inCombat ? CHORDS_COMBAT : CHORDS;
+    const ch = pool[chordI % pool.length];
     chordI++;
-    for (const f of ch) pad(f);
-    pad(ch[0] / 2, 4.6, 0.02);
-    if (Math.random() < 0.55) setTimeout(() => music.on && pluck(PENTA[Math.floor(Math.random() * PENTA.length)]), 900 + Math.random() * 1500);
-    if (Math.random() < 0.35) setTimeout(() => music.on && pluck(PENTA[Math.floor(Math.random() * PENTA.length)], 0.022), 3000 + Math.random() * 900);
+    for (const f of ch) pad(f, inCombat ? 2.4 : 4.6, inCombat ? 0.02 : 0.016);
+    pad(ch[0] / 2, inCombat ? 2.4 : 4.6, 0.02);
+    if (inCombat) {
+      // camada de tambor pulsante + arpejo tenso
+      for (let b = 0; b < 4; b++) setTimeout(() => music.on && music.combat > 0.5 && drum(b % 2 ? 0.035 : 0.055), b * 550);
+      if (Math.random() < 0.7) setTimeout(() => music.on && pluck(ch[Math.floor(Math.random() * ch.length)] * 2, 0.03), 300 + Math.random() * 600);
+    } else {
+      if (Math.random() < 0.55) setTimeout(() => music.on && pluck(PENTA[Math.floor(Math.random() * PENTA.length)]), 900 + Math.random() * 1500);
+      if (Math.random() < 0.35) setTimeout(() => music.on && pluck(PENTA[Math.floor(Math.random() * PENTA.length)], 0.022), 3000 + Math.random() * 900);
+    }
   }
-  setTimeout(musicTick, 4400);
+  setTimeout(musicTick, inCombat ? 2300 : 4400); // tempo mais rápido no combate
 }
 export function startMusic() {
   if (musicStarted) return;

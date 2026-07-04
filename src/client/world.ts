@@ -42,6 +42,32 @@ export const colliders = [];      // cilindros de colisão {x, z, r} — casas, 
 
 function lambert(color, opts = {}) { return new THREE.MeshLambertMaterial({ color, ...opts }); }
 
+// ---- vento: uniforme compartilhado, atualizado por frame ----
+const windUniform = { value: 0 };
+const swayTrees = []; // { group, phase, amp }
+// material que balança ao vento (a folhagem/grama inclina conforme a altura do vértice)
+function windMaterial(color, amp = 0.18) {
+  const m = new THREE.MeshLambertMaterial({ color });
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = windUniform;
+    sh.uniforms.uAmp = { value: amp };
+    sh.vertexShader = 'uniform float uTime;\nuniform float uAmp;\n' + sh.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       #ifdef USE_INSTANCING
+         vec3 wp = vec3(instanceMatrix[3][0], 0.0, instanceMatrix[3][2]);
+       #else
+         vec3 wp = vec3(modelMatrix[3][0], 0.0, modelMatrix[3][2]);
+       #endif
+       float ph = uTime * 1.6 + wp.x * 0.25 + wp.z * 0.2;
+       float sway = sin(ph) * uAmp * max(transformed.y, 0.0);
+       transformed.x += sway;
+       transformed.z += sway * 0.45;`
+    );
+  };
+  return m;
+}
+
 export function buildWorld() {
   buildGround();
   buildWater();
@@ -125,7 +151,29 @@ function buildWater() {
 }
 
 // ------------------------------------------------ sky objects
+let skyDome;
+const skyTopCol = new THREE.Color(0x3a78c8), skyBotCol = new THREE.Color(0xbfe0f0);
 function buildSkyObjects() {
+  // domo de céu com gradiente (zênite → horizonte) — segue a câmera, atrás de tudo
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: { topColor: { value: new THREE.Color(0x3a78c8) }, botColor: { value: new THREE.Color(0xbfe0f0) }, sunDir: { value: new THREE.Vector3(0, 1, 0) }, sunColor: { value: new THREE.Color(0xffe6b0) } },
+    vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec3 vDir; uniform vec3 topColor; uniform vec3 botColor; uniform vec3 sunDir; uniform vec3 sunColor;
+      void main(){
+        float h = clamp(vDir.y*1.15+0.15, 0.0, 1.0);
+        vec3 col = mix(botColor, topColor, pow(h, 0.7));
+        float sd = max(dot(normalize(vDir), normalize(sunDir)), 0.0);
+        col += sunColor * pow(sd, 16.0) * 0.35;         // brilho concentrado perto do sol
+        col += sunColor * pow(max(1.0-vDir.y,0.0),3.0) * pow(sd,3.0) * 0.14; // glow suave no horizonte
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  skyDome = new THREE.Mesh(new THREE.SphereGeometry(500, 24, 16), domeMat);
+  skyDome.renderOrder = -1;
+  scene.add(skyDome);
+
   const starGeo = new THREE.BufferGeometry();
   const sp = [];
   for (let i = 0; i < 420; i++) {
@@ -220,6 +268,8 @@ function addTree(x, z, s, kind) {
   g.rotation.y = rnd(x, z) * Math.PI * 2;
   scene.add(g);
   colliders.push({ x, z, r: 0.45 * s }); // tronco
+  // balança ao vento a partir da base (copas maiores inclinam mais)
+  swayTrees.push({ group: g, phase: rnd(x + 3, z + 7) * Math.PI * 2, amp: (kind === 'pine' ? 0.02 : 0.035) / Math.max(0.6, s) });
 }
 
 function buildVegetation() {
@@ -251,26 +301,35 @@ function buildVegetation() {
   }
   // instanced grass tufts
   {
-    const blade = new THREE.ConeGeometry(0.16, 0.55, 4);
-    blade.translate(0, 0.26, 0);
-    const grassMat = new THREE.MeshLambertMaterial({ color: 0x79ab4e });
-    const inst = new THREE.InstancedMesh(blade, grassMat, 900);
+    const blade = new THREE.ConeGeometry(0.16, 0.6, 4);
+    blade.translate(0, 0.28, 0);
+    const grassMat = windMaterial(0x79ab4e, 0.22);
+    const CAP = 2600;
+    const inst = new THREE.InstancedMesh(blade, grassMat, CAP);
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
+    const gc1 = new THREE.Color(0x79ab4e), gc2 = new THREE.Color(0x5f8a3a), gcol = new THREE.Color();
     let n = 0;
-    for (let i = 0; i < 1400 && n < 900; i++) {
+    for (let i = 0; i < 5200 && n < CAP; i++) {
       const a = rnd(i, 20) * Math.PI * 2;
-      const r = 6 + rnd(i, 21) * 130;
+      const r = 6 + rnd(i, 21) * 250;
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
       const y = terrainHeight(x, z);
-      if (y < LAKE.waterY + 0.3 || y > 7 || distToPath(x, z) < 2.5) continue;
+      if (y < LAKE.waterY + 0.4 || y > 8 || distToPath(x, z) < 2.2) continue;
+      let inWater = false;
+      for (const w of WATERS) if (Math.hypot(x - w.x, z - w.z) < w.r + w.shore) inWater = true;
+      if (inWater) continue;
       p.set(x, y, z);
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rnd(i, 22) * Math.PI);
-      sc.setScalar(0.7 + rnd(i, 23) * 0.8);
+      sc.setScalar(0.7 + rnd(i, 23) * 0.9);
       m4.compose(p, q, sc);
-      inst.setMatrixAt(n++, m4);
+      inst.setMatrixAt(n, m4);
+      gcol.lerpColors(gc1, gc2, rnd(i, 24));
+      inst.setColorAt(n, gcol);
+      n++;
     }
     inst.count = n;
     inst.instanceMatrix.needsUpdate = true;
+    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
     scene.add(inst);
   }
   // flowers
@@ -1073,8 +1132,38 @@ function buildAmbientLife() {
 // ============================================================ per-frame world update
 export function updateWorld(time, dt, playerPos) {
   const nf = SKY.nightF;
-  // celestial sprites follow the player
+  // ---- vento ----
+  windUniform.value = time;
+  const gust = 1 + Math.sin(time * 0.35) * 0.5; // rajadas suaves
+  for (const t of swayTrees) {
+    // só balança árvores próximas (custo baixo)
+    if (Math.abs(t.group.position.x - playerPos.x) > 120 || Math.abs(t.group.position.z - playerPos.z) > 120) continue;
+    const s = Math.sin(time * 1.3 + t.phase) * t.amp * gust;
+    t.group.rotation.x = s;
+    t.group.rotation.z = s * 0.6;
+  }
+  // ---- domo de céu (gradiente + sol) ----
   const ang = SKY.dayT * Math.PI * 2;
+  const sunAlt = Math.sin(ang), az = Math.cos(ang);
+  if (skyDome) {
+    skyDome.position.copy(playerPos);
+    const u = skyDome.material.uniforms;
+    const dayTop = new THREE.Color(0x2f6fc8), dayBot = new THREE.Color(0xcfe6f2);
+    const duskTop = new THREE.Color(0x5a3a7a), duskBot = new THREE.Color(0xe8945a);
+    const nightTop = new THREE.Color(0x060a1e), nightBot = new THREE.Color(0x1a2340);
+    const t = Math.max(0, Math.min(1, sunAlt * 2.2)); // 0 no crepúsculo, 1 no meio-dia
+    if (sunAlt > 0) {
+      u.topColor.value.lerpColors(duskTop, dayTop, t);
+      u.botColor.value.lerpColors(duskBot, dayBot, t);
+    } else {
+      const tn = Math.max(0, Math.min(1, -sunAlt * 3));
+      u.topColor.value.lerpColors(duskTop, nightTop, tn);
+      u.botColor.value.lerpColors(duskBot, nightBot, tn);
+    }
+    u.sunDir.value.set(az, sunAlt, 0.35).normalize();
+    u.sunColor.value.setHex(sunAlt > 0.2 ? 0xfff0d0 : 0xff9a5a);
+  }
+  // celestial sprites follow the player
   sunSprite.position.set(playerPos.x + Math.cos(ang) * 380, Math.sin(ang) * 380, playerPos.z + 120);
   moonSprite.position.set(playerPos.x - Math.cos(ang) * 360, -Math.sin(ang) * 360, playerPos.z - 100);
   sunSprite.material.opacity = clamp(Math.sin(ang) * 2 + 0.3, 0, 1);
