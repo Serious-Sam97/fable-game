@@ -71,6 +71,18 @@ function driveHeroActor(dt, swingRose, rollRose) {
 // ============================================================ cão fiel (companheiro de Fable)
 const dogModel = makeDog();
 scene.add(dogModel.group);
+// cão animado (Husky GLTF) com fallback pro procedural
+let dogActor = null;
+(async () => {
+  try {
+    const gltf = await loadGLTF('/models/animals/Husky.gltf');
+    const scale = 0.95 / Actor.height(gltf);
+    dogActor = new Actor(gltf, { scale, faceOffset: Math.PI });
+    dogModel.group.visible = false;
+    scene.add(dogActor.wrapper);
+    dogActor.setBase(['Idle']);
+  } catch (e) { console.warn('husky falhou — cão procedural:', e); }
+})();
 const dog = {
   pos: new THREE.Vector3(2, 0, 10),
   vel: new THREE.Vector3(),
@@ -2399,6 +2411,12 @@ function updateNpc(n, dt) {
 // ============================================================ cão fiel — comportamento
 const dogCoatGood = new THREE.Color(0xe8c06a), dogCoatNeutral = new THREE.Color(0xc8965a), dogCoatEvil = new THREE.Color(0x4a4038);
 function updateDogAppearance() {
+  if (dogActor) {
+    // tinge a textura do husky: normal no bem, escurecido no mal
+    const tint = player.morality <= -40 ? 0x6a6068 : player.morality >= 40 ? 0xfff2d8 : 0xffffff;
+    dogActor.root.traverse((o) => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.color.setHex(tint)); });
+    return;
+  }
   const c = new THREE.Color();
   if (player.morality >= 40) c.copy(dogCoatGood);
   else if (player.morality <= -40) c.copy(dogCoatEvil);
@@ -2450,21 +2468,28 @@ function updateDog(dt) {
   // não deixa o cão afundar na água / sair do mundo
   if (!walkable(dog.pos.x, dog.pos.z)) { dog.pos.x = player.pos.x; dog.pos.z = player.pos.z; }
   dog.pos.y = terrainHeight(dog.pos.x, dog.pos.z);
-  dogModel.group.position.copy(dog.pos);
-  dogModel.group.rotation.y = dog.ry;
-
-  // animação de patas / rabo
-  const ls = moving ? Math.sin(dog.walkT) * 0.5 : 0;
-  dogModel.legs[0].rotation.x = ls; dogModel.legs[3].rotation.x = ls;
-  dogModel.legs[1].rotation.x = -ls; dogModel.legs[2].rotation.x = -ls;
-  const wagSpeed = player.morality >= 40 ? 20 : player.morality <= -40 ? 5 : 12;
-  dogModel.tail.rotation.y = Math.sin(time * wagSpeed) * (player.morality <= -40 ? 0.2 : 0.6);
-  dogModel.head.rotation.x = moving ? 0 : Math.sin(time * 2) * 0.08;
-
-  // cavando no tesouro
-  if (dog.state === 'dig' && dog.digTarget && d <= stopDist) {
-    dogModel.head.rotation.x = Math.sin(time * 18) * 0.4 - 0.2; // fuçando
-    if (Math.random() < dt * 1.2) floatText(dog.pos, '⛏️', '#c8a24b', 13);
+  const digging = dog.state === 'dig' && dog.digTarget && d <= stopDist;
+  if (dogActor) {
+    dogActor.wrapper.position.copy(dog.pos);
+    dogActor.wrapper.rotation.y = dog.ry;
+    if (digging) dogActor.setBase(['Eating', 'Idle_2_HeadLow', 'Idle']);
+    else dogActor.setBase(moving ? (moveSpeed >= 7 ? ['Gallop', 'Walk'] : ['Walk']) : ['Idle', 'Idle_2']);
+    dogActor.update(dt);
+    if (digging && Math.random() < dt * 1.2) floatText(dog.pos, '⛏️', '#c8a24b', 13);
+  } else {
+    dogModel.group.position.copy(dog.pos);
+    dogModel.group.rotation.y = dog.ry;
+    // animação procedural de patas / rabo
+    const ls = moving ? Math.sin(dog.walkT) * 0.5 : 0;
+    dogModel.legs[0].rotation.x = ls; dogModel.legs[3].rotation.x = ls;
+    dogModel.legs[1].rotation.x = -ls; dogModel.legs[2].rotation.x = -ls;
+    const wagSpeed = player.morality >= 40 ? 20 : player.morality <= -40 ? 5 : 12;
+    dogModel.tail.rotation.y = Math.sin(time * wagSpeed) * (player.morality <= -40 ? 0.2 : 0.6);
+    dogModel.head.rotation.x = moving ? 0 : Math.sin(time * 2) * 0.08;
+    if (digging) {
+      dogModel.head.rotation.x = Math.sin(time * 18) * 0.4 - 0.2;
+      if (Math.random() < dt * 1.2) floatText(dog.pos, '⛏️', '#c8a24b', 13);
+    }
   }
 
   // late para inimigos próximos em combate
