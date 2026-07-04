@@ -11,7 +11,7 @@ import {
 import {
   makeHero, makeVillager, makeBandit, makeHobbe, makeBalverine,
   makeBeast, makeBeetle, makeChicken, makeTextSprite, mountWeapon, applyArmorTo, makeTroll, makeCrab,
-  makeShadowKnight, makeMalachi,
+  makeShadowKnight, makeMalachi, makeDog,
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
@@ -29,6 +29,27 @@ const SAVE_KEY = 'fable_save_v1';
 // ============================================================ player state
 const heroModel = makeHero();
 scene.add(heroModel.group);
+
+// ============================================================ cão fiel (companheiro de Fable)
+const dogModel = makeDog();
+scene.add(dogModel.group);
+const dog = {
+  pos: new THREE.Vector3(2, 0, 10),
+  vel: new THREE.Vector3(),
+  ry: 0, walkT: 0, barkT: 0, digTarget: null,
+  state: 'follow', // follow | sit | dig
+  sniffT: 6,
+};
+dog.pos.y = 0; // ajustado no primeiro update
+// tesouros enterrados que o cão fareja (posições espalhadas, cavados uma vez)
+const digSpots = [
+  { x: 20, z: 18, dug: false, loot: { gold: 40 } },
+  { x: -34, z: 30, dug: false, loot: { gold: 30, item: { wpn: 'machado', rar: 'incomum' } } },
+  { x: 48, z: -20, dug: false, loot: { gold: 60 } },
+  { x: -20, z: -30, dug: false, loot: { gold: 35, item: { arm: 'couro_capuz', rar: 'raro' } } },
+  { x: 90, z: 30, dug: false, loot: { gold: 80 } },
+  { x: 214, z: 55, dug: false, loot: { gold: 50, item: { arm: 'couro_botas', rar: 'incomum' } } },
+];
 
 const player = {
   pos: new THREE.Vector3(0, 0, 10),
@@ -78,6 +99,7 @@ function playerTitle() {
 function updateMoralityVisuals() {
   heroModel.halo.visible = player.morality >= 40;
   heroModel.horns.visible = player.morality <= -40;
+  updateDogAppearance();
 }
 
 // ============================================================ disciplinas & arma equipada
@@ -1791,6 +1813,11 @@ function nearestInteract() {
   } else if (quests.mq.stage === 'choice') {
     consider(dRitual, 8, 'Decidir o destino de Malachi', decideMalachi);
   }
+  // cão farejou tesouro enterrado
+  if (dog.digTarget && !dog.digTarget.dug) {
+    const s = dog.digTarget;
+    consider(Math.hypot(s.x - player.pos.x, s.z - player.pos.z), 3, 'Cavar o tesouro 🦴', () => digTreasure(s));
+  }
   // estações de crafting
   consider(Math.hypot(FORGE.x - player.pos.x, FORGE.z - player.pos.z), 3, 'Usar a Forja ⚒️', openForge);
   consider(Math.hypot(CAULDRON.x - player.pos.x, CAULDRON.z - player.pos.z), 3, 'Usar o Caldeirão 🧪', openCauldron);
@@ -1980,6 +2007,7 @@ function buildSaveData() {
     fish: player.fish, ownedHouse: player.ownedHouse, rentDay: player.rentDay,
     silverKey: player.silverKey, lockedChestOpened: lockedChest.opened,
     mats: player.mats, bounty: player.bounty,
+    dug: digSpots.map((s) => s.dug),
   };
 }
 function saveGame() {
@@ -2011,6 +2039,7 @@ function applySaveData(data) {
   player.silverKey = !!data.silverKey;
   player.mats = data.mats ?? { herb: 0, ore: 0 };
   player.bounty = data.bounty ?? 0;
+  if (Array.isArray(data.dug)) digSpots.forEach((s, i) => { s.dug = !!data.dug[i]; });
   if (data.lockedChestOpened) {
     lockedChest.opened = true;
     if (lockedChest.lid) { lockedChest.lid.rotation.x = -1.1; lockedChest.lid.position.z = -0.5; }
@@ -2314,6 +2343,107 @@ function updateNpc(n, dt) {
   }
 }
 
+// ============================================================ cão fiel — comportamento
+const dogCoatGood = new THREE.Color(0xe8c06a), dogCoatNeutral = new THREE.Color(0xc8965a), dogCoatEvil = new THREE.Color(0x4a4038);
+function updateDogAppearance() {
+  const c = new THREE.Color();
+  if (player.morality >= 40) c.copy(dogCoatGood);
+  else if (player.morality <= -40) c.copy(dogCoatEvil);
+  else c.lerpColors(dogCoatEvil, player.morality >= 0 ? dogCoatGood : dogCoatEvil, 0.5).copy(dogCoatNeutral);
+  for (const m of dogModel.mats) if (m.color.getHex() !== 0x1a1512 && m.color.getHex() !== 0x8a6a3a) m.color.copy(c);
+}
+
+function updateDog(dt) {
+  // procura tesouro enterrado por perto para farejar
+  if (!dog.digTarget) {
+    dog.sniffT -= dt;
+    if (dog.sniffT <= 0) {
+      dog.sniffT = 2;
+      let best = null, bd = 16;
+      for (const s of digSpots) {
+        if (s.dug) continue;
+        const d = Math.hypot(s.x - player.pos.x, s.z - player.pos.z);
+        if (d < bd) { bd = d; best = s; }
+      }
+      if (best) { dog.digTarget = best; dog.state = 'dig'; floatText(dog.pos, '🦴 farejou algo!', '#e8c06a', 15); barkSound(); }
+    }
+  } else if (dog.digTarget.dug || Math.hypot(dog.digTarget.x - player.pos.x, dog.digTarget.z - player.pos.z) > 26) {
+    dog.digTarget = null; dog.state = 'follow';
+  }
+
+  // alvo de movimento
+  let tx, tz, moveSpeed;
+  if (dog.state === 'dig' && dog.digTarget) {
+    tx = dog.digTarget.x; tz = dog.digTarget.z; moveSpeed = 7;
+  } else {
+    // segue atrás do herói, deslocado para o lado
+    const behind = 2.2;
+    tx = player.pos.x - Math.sin(heroModel.group.rotation.y) * behind + Math.cos(heroModel.group.rotation.y);
+    tz = player.pos.z - Math.cos(heroModel.group.rotation.y) * behind - Math.sin(heroModel.group.rotation.y);
+    moveSpeed = player.moving ? 9.5 : 4;
+  }
+  const dx = tx - dog.pos.x, dz = tz - dog.pos.z;
+  const d = Math.hypot(dx, dz);
+  const stopDist = dog.state === 'dig' ? 1.2 : 1.6;
+  let moving = false;
+  if (d > stopDist) {
+    const step = Math.min(d - stopDist, moveSpeed * dt);
+    dog.pos.x += (dx / d) * step;
+    dog.pos.z += (dz / d) * step;
+    dog.ry = Math.atan2(dx, dz);
+    dog.walkT += dt * 14;
+    moving = true;
+  }
+  // não deixa o cão afundar na água / sair do mundo
+  if (!walkable(dog.pos.x, dog.pos.z)) { dog.pos.x = player.pos.x; dog.pos.z = player.pos.z; }
+  dog.pos.y = terrainHeight(dog.pos.x, dog.pos.z);
+  dogModel.group.position.copy(dog.pos);
+  dogModel.group.rotation.y = dog.ry;
+
+  // animação de patas / rabo
+  const ls = moving ? Math.sin(dog.walkT) * 0.5 : 0;
+  dogModel.legs[0].rotation.x = ls; dogModel.legs[3].rotation.x = ls;
+  dogModel.legs[1].rotation.x = -ls; dogModel.legs[2].rotation.x = -ls;
+  const wagSpeed = player.morality >= 40 ? 20 : player.morality <= -40 ? 5 : 12;
+  dogModel.tail.rotation.y = Math.sin(time * wagSpeed) * (player.morality <= -40 ? 0.2 : 0.6);
+  dogModel.head.rotation.x = moving ? 0 : Math.sin(time * 2) * 0.08;
+
+  // cavando no tesouro
+  if (dog.state === 'dig' && dog.digTarget && d <= stopDist) {
+    dogModel.head.rotation.x = Math.sin(time * 18) * 0.4 - 0.2; // fuçando
+    if (Math.random() < dt * 1.2) floatText(dog.pos, '⛏️', '#c8a24b', 13);
+  }
+
+  // late para inimigos próximos em combate
+  dog.barkT -= dt;
+  if (dog.barkT <= 0) {
+    for (const e of enemies) {
+      if (e.state === 'dead' || e.state === 'surrender') continue;
+      if (e.pos.distanceTo(player.pos) < 11) {
+        dog.barkT = 2.5;
+        floatText(dog.pos, player.morality <= -40 ? 'Grrr…' : 'Au! Au!', '#e8d5a0', 14);
+        barkSound();
+        break;
+      }
+    }
+  }
+}
+function barkSound() {
+  const evil = player.morality <= -40;
+  beep(evil ? 130 : 340, 0.09, evil ? 'sawtooth' : 'square', 0.04, evil ? -20 : -60);
+}
+function digTreasure(spot) {
+  spot.dug = true;
+  dog.digTarget = null; dog.state = 'follow';
+  player.gold += spot.loot.gold;
+  const parts = [`${spot.loot.gold} 🪙`];
+  if (spot.loot.item) { addItem(spot.loot.item); parts.push('um item'); }
+  toast(`🦴 O cão desenterrou: ${parts.join(' e ')}!`);
+  ringEffect(new THREE.Vector3(spot.x, terrainHeight(spot.x, spot.z), spot.z), 0xc8a24b, 2.5);
+  beep(600, 0.1, 'sine', 0.05); setTimeout(() => beep(900, 0.15, 'sine', 0.05), 110);
+  saveGame();
+}
+
 // ============================================================ multiplayer
 let NET_NAME = 'Galo'; // definido na tela de título
 const remoteHeroes = new Map();
@@ -2528,6 +2658,7 @@ function tick() {
     for (const c of drainChat()) addChatLine(c.name, c.text, c.pid === 0);
     for (const c of chickens) updateChicken(c, dt);
     for (const n of npcs) updateNpc(n, dt);
+    updateDog(dt);
     updateFishing(dt);
     if (forSaleSign) forSaleSign.visible = !player.ownedHouse;
     for (const node of gatherables) {
@@ -2700,7 +2831,7 @@ addEventListener('beforeunload', saveGame);
 window.FABLE = {
   player, quests, enemies, npcs, chickens, SKY, net, remoteHeroes, localSim, combatLocal,
   gainDiscXP, addItem, updateHeroBody, learnTalent, weather, travelGate,
-  gatherables, FORGE, CAULDRON, heroModel,
+  gatherables, FORGE, CAULDRON, dog, digSpots, heroModel,
   giveGold: (n) => { player.gold += n; },
   setDayT: (t) => { SKY.dayT = t; },
   setMorality: (m) => { player.morality = m; updateMoralityVisuals(); },
@@ -2709,4 +2840,5 @@ window.FABLE = {
 };
 
 updateHeroBody(); // arma inicial na mão + visual das disciplinas
+updateDogAppearance();
 animate();

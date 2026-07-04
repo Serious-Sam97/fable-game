@@ -758,6 +758,52 @@ export function makeBeetle({ bomb = false } = {}) {
   return { group: g, legs, mats };
 }
 
+// ---------------------------------------------------------------- cão fiel (companheiro)
+export function makeDog() {
+  const g = new THREE.Group();
+  const mats = [];
+  const M = matMaker(mats);
+  const coat = 0xc8965a; // pelagem base (o jogo ajusta pela moralidade)
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.5, 6, 10), M(coat));
+  body.rotation.z = Math.PI / 2;
+  body.position.set(0, 0.55, 0);
+  const chest = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), M(coat));
+  chest.position.set(0.32, 0.55, 0);
+  // cabeça
+  const head = new THREE.Group();
+  head.position.set(0.52, 0.7, 0);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.19, 12, 10), M(coat));
+  skull.geometry.scale(1.1, 1, 0.95);
+  const snout = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.16, 4, 8), M(coat));
+  snout.rotation.z = Math.PI / 2;
+  snout.position.set(0.22, -0.03, 0);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), basic(0x1a1512));
+  nose.position.set(0.34, -0.01, 0);
+  const eyeGeo = new THREE.SphereGeometry(0.035, 6, 6);
+  const eL = new THREE.Mesh(eyeGeo, basic(0x1a1512)); eL.position.set(0.14, 0.06, 0.1);
+  const eR = new THREE.Mesh(eyeGeo, basic(0x1a1512)); eR.position.set(0.14, 0.06, -0.1);
+  const earGeo = new THREE.ConeGeometry(0.07, 0.18, 5);
+  const earL = new THREE.Mesh(earGeo, M(0x8a6a3a)); earL.position.set(-0.02, 0.16, 0.11); earL.rotation.set(0.3, 0, -0.2);
+  const earR = new THREE.Mesh(earGeo, M(0x8a6a3a)); earR.position.set(-0.02, 0.16, -0.11); earR.rotation.set(-0.3, 0, -0.2);
+  head.add(skull, snout, nose, eL, eR, earL, earR);
+  // patas
+  const legGeo = new THREE.CapsuleGeometry(0.055, 0.34, 4, 8);
+  const legs = [];
+  for (const [lx, lz] of [[0.28, 0.14], [0.28, -0.14], [-0.2, 0.14], [-0.2, -0.14]]) {
+    const leg = new THREE.Mesh(legGeo, M(coat));
+    leg.position.set(lx, 0.25, lz);
+    legs.push(leg); g.add(leg);
+  }
+  // rabo
+  const tail = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.3, 4, 6), M(coat));
+  tail.position.set(-0.42, 0.68, 0);
+  tail.rotation.z = -0.7;
+  g.add(body, chest, head, tail);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return { group: g, head, tail, legs, mats };
+}
+
 // ---------------------------------------------------------------- crab
 export function makeCrab() {
   const g = new THREE.Group();

@@ -137,6 +137,10 @@ dungeon de formas completamente diferentes.
 - [x] **Clima**: chuva determinística (mesma para todos no co-op, derivada da hora do
       mundo) escurece o céu e aproxima a névoa; neblina/tempestade pendentes
 - [ ] Fauna ambiente: cervos (caçáveis), pássaros, peixes pulando
+- [x] **Cão fiel** ✅ (companheiro icônico de Fable): segue o herói, late para
+      inimigos, fareja 6 tesouros enterrados e te leva até eles (Cavar 🦴 → ouro+itens),
+      e a pelagem/comportamento mudam com a moralidade (dourado feliz ↔ escuro rosnando);
+      por enquanto é pessoal/local (outros jogadores não o veem)
 - [x] **Pesca** ✅ (minigame de timing perto d'água, 5 tipos de peixe + bota velha,
       treina Habilidade, vendável ao Barnum/Sal); mineração/herbalismo/lenhador pendentes
 - [x] **Crafting** ✅: coleta de ervas 🌿 e minério ⛏️ (nós espalhados que renascem;
