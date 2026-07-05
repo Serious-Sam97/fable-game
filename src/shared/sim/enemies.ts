@@ -28,7 +28,8 @@ export type SimEvent =
   | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
   | { t: 'boom'; x: number; z: number }
   | { t: 'shock'; x: number; z: number }
-  | { t: 'ecombo'; id: number; pid: number };  // 3º golpe do combo conectou
+  | { t: 'ecombo'; id: number; pid: number }   // 3º golpe do combo conectou
+  | { t: 'eexec'; id: number; pid: number };   // execução de inimigo atordoado (Fase 15)
 
 export type EnemyState = 'idle' | 'chase' | 'attack' | 'return' | 'dead' | 'leap' | 'surrender' | 'flee';
 
@@ -49,6 +50,7 @@ export interface SimEnemy {
   targetPid: number | null;
   isLeader: boolean;
   stunT: number;
+  hitstunT: number;     // stagger breve por golpe — reação a hit (Fase 14)
   // queimadura (Bola de Fogo)
   burnT: number;
   burnTick: number;
@@ -131,7 +133,7 @@ export class EnemySim {
       knockX: 0, knockZ: 0,
       leapCd: 0, leapT: 0,
       leapFromX: 0, leapFromZ: 0, leapToX: 0, leapToZ: 0,
-      targetPid: null, isLeader, stunT: 0,
+      targetPid: null, isLeader, stunT: 0, hitstunT: 0,
       burnT: 0, burnTick: 0, burnDmg: 0, burnPid: 0,
     };
     this.enemies.set(e.id, e);
@@ -162,6 +164,8 @@ export class EnemySim {
     const e = this.enemies.get(id);
     if (!e || e.state === 'dead' || e.state === 'surrender' || e.state === 'flee') return;
     e.hp -= dmg;
+    // reação a hit (Fase 14): stagger breve — melee interrompe mais, ranged/magia dão só um flinch
+    e.hitstunT = Math.max(e.hitstunT, src === 'melee' ? 0.22 : 0.1);
     this.events.push({ t: 'edmg', id: e.id, amount: dmg, pid: attackerPid, src, crit });
     if (e.state === 'idle' || e.state === 'return') {
       e.state = 'chase';
@@ -287,9 +291,20 @@ export class EnemySim {
         if (near) e.ry = Math.atan2(near.x - e.x, near.z - e.z);
         continue;
       }
+      // knockback (Fase 14): aplicado ANTES dos gates → empurra o inimigo mesmo atordoado/em stagger
+      if (Math.abs(e.knockX) + Math.abs(e.knockZ) > 0.05) {
+        e.x += e.knockX * eDt;
+        e.z += e.knockZ * eDt;
+        const decay = Math.max(0, 1 - 5 * eDt);
+        e.knockX *= decay; e.knockZ *= decay;
+      }
       if (e.stunT > 0) {
         e.stunT -= dt;
         continue; // atordoado — parado no lugar
+      }
+      if (e.hitstunT > 0) {
+        e.hitstunT -= dt;
+        continue; // cambaleio breve ao levar golpe (Fase 14) — dá pra "ler" o impacto
       }
       if (e.state === 'flee') {
         const near = this.nearest(players, e.x, e.z);
@@ -302,14 +317,6 @@ export class EnemySim {
         e.ry = Math.atan2(dx, dz);
         e.walkT += dt * 12;
         continue;
-      }
-
-      // knockback
-      if (Math.abs(e.knockX) + Math.abs(e.knockZ) > 0.05) {
-        e.x += e.knockX * eDt;
-        e.z += e.knockZ * eDt;
-        const decay = Math.max(0, 1 - 5 * eDt);
-        e.knockX *= decay; e.knockZ *= decay;
       }
 
       const dHome = Math.hypot(e.homeX - e.x, e.homeZ - e.z);

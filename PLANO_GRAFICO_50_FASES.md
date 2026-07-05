@@ -467,13 +467,55 @@ bancada onde calibramos tudo das próximas fases sem caçar no jogo inteiro.
 > seguem individuais** — são multi-mesh COM sway visível; instanciá-las pede wind por-instância no
 > shader (como a grama) — fica como refino futuro se o frame apertar em máquina fraca.*
 
-### Fase 49 — Otimização de texturas/materiais ⬜
-Atlas, compressão KTX2/Draco, corte de memória de GPU.
-**Pronto:** o jogo carrega rápido e cabe na VRAM de uma máquina modesta.
+### Fase 49 — Otimização de texturas/materiais ✅
+> **Duas frentes.** **(1) Peso morto:** `public/` é copiado verbatim pro build, e havia ~224MB
+> de fontes que o jogo **nunca carrega** (702 `.fbx`, 50 `.blend`, 702 `.obj`/`.mtl`, 329 `.dae`,
+> 329 `.stl`) — removidos do repo (mantido só `License.txt` CC0). **(2) Compressão Draco** dos 768
+> modelos carregados (`.gltf`/`.glb`) via `scripts/compress-models.mjs` (gltf-transform v4 +
+> draco3d): `dedup` + `prune` + `resample` (poda keyframes) + `weld` + `draco` (geometria). Truque
+> central: o resultado é escrito como **GLB binário no mesmo arquivo `.gltf`** — o `GLTFLoader`
+> detecta o formato pelos **magic bytes**, não pela extensão → **zero edição nos 83 caminhos
+> hardcoded**, 1 arquivo por modelo, sem base64, sem `.bin` irmão. Runtime: `DRACOLoader` ligado ao
+> loader compartilhado em `assets.ts`, decoder servido de `public/draco/` (só o decoder, sem o
+> encoder). Modelos não-Draco seguem carregando pelo mesmo loader.
+> **Keep-if-smaller:** Draco tem overhead fixo → em props minúsculos ele *incha* (ex.: `wall.glb`
+> 8K→16K). O script só sobrescreve se o resultado for >8% menor; senão **mantém o original**
+> (161 dos 768 arquivos ficaram originais). Assim nada é inflado à toa.
+> **Resultados:** `public/models` **410M → 48M** (88% menor no total, contando os fontes mortos);
+> payload carregado **173.5MB → 35.6MB** (80%); ex.: `Wolf.gltf` 3.03→0.52MB preservando as 12
+> animações/skin. **Draco é lossless nos bounds** (verificado: bbox do módulo idêntico antes/depois
+> — foi o que descartou o Draco como causa do bug das casas na Fase 50).
+> **Verificado no preview:** 0 erros de console/shader, **0 requests falhados** (decoder + todos os
+> modelos carregam); geometria decodificada objetivamente — herói `heroActor.root` **12103 v**,
+> fauna **8556 v**, cena inteira **248 skinned meshes / 449k vértices**; galinhas/cão/NPCs/herói
+> íntegros no screenshot (sem T-pose); **120 FPS** (8.33ms). `scripts/compress-models.mjs`,
+> `assets.ts` (DRACOLoader), `public/draco/`.
+> **Honestidade (o "cabe na VRAM"):** pulei **KTX2/atlas de textura** de propósito — as texturas
+> aqui são minúsculas (~10MB em pngs-paleta, muitos modelos usam vertex-color) e Draco encolhe
+> **disco/download/decode-CPU**, mas geometria **decodificada ocupa a mesma VRAM**. O ganho real e
+> concreto desta fase é **load-time + tamanho de deploy/repo** (−88%), não um corte dramático de
+> VRAM. KTX2 fica como refino opcional se algum dia entrarem texturas grandes (o framework de
+> loaders já está montado — bastaria plugar o `KTX2Loader`).
 
-### Fase 50 — Passe final de polish & trailer-ready ⬜
+### Fase 50 — Passe final de polish & trailer-ready 🔨 *(em andamento)*
 Câmera, screenshots de divulgação, benchmark em máquina modesta, checklist de arestas.
 **Pronto:** um trailer de 60s parece um indie de verdade e roda liso fora da máquina do dev.
+
+> **Auditoria visual (feita):** tour por meio-dia/noite/tarde em 16:9. O jogo já lê como indie de
+> verdade — a **noite** é o ponto forte (emissivos/bloom, vaga-lumes, poças de lanterna), o
+> meio-dia na vila é coeso, 120 FPS. Nenhuma geometria quebrada nova; a "coluna preta" do 1º shot
+> era só o viewport em retrato espremendo a cena.
+> **Bug das casas consertado (feedback do dono):** paredes "destacadas" com vãos e telhado
+> pequeno/estranho — **bug pré-existente** (não do Draco, provado por bbox idêntico). Causa: o
+> módulo de parede do town kit tem a origem fora do centro (malha deslocada ~0.45 no X local); como
+> cada lado usa rotação diferente, o offset jogava frente/fundo pra dentro e leste/oeste pra fora →
+> retângulo inconsistente com degrau/vão em cada canto, e o telhado (raio pequeno) não cobria.
+> **Fix em `world.ts:buildTownHouse`:** mede o offset por peça e o cancela na posição (todas as
+> paredes rente à borda) + raio do telhado 0.66→0.82 (cobre com beiral). Verificado: footprint das
+> paredes agora **simétrico (6.16×6.16, era assimétrico ~6.4×2.4)**, canto limpo, telhado com
+> beiral, 0 erros. `world.ts:buildTownHouse`.
+> **Falta (subjetivo, aguardando direção do dono):** variar/dessaturar telhados laranja, afrouxar
+> vinheta de combate na vila, galeria de beauty shots, benchmark em máquina modesta, checklist final.
 
 ---
 

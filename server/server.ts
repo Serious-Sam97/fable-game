@@ -123,12 +123,16 @@ wss.on('connection', (ws, req) => {
             wpnKind: s.wpnKind === 'bow' || s.wpnKind === 'staff' ? s.wpnKind : 'melee',
             wpnDmg: clamp(s.wpnDmg, 0.5, 3.0),
             wpnRange: clamp(s.wpnRange, 2, 30),
+            wpnKnock: clamp(s.wpnKnock, 0, 3), // Fase 16
+
             spellMult: clamp(s.spellMult, 1, 1.6),
             critBonus: clamp(s.critBonus, 0, 0.15),
             chainBonus: clamp(s.chainBonus, 0, 1),
           },
           String(m.key),
           typeof m.targetId === 'number' ? m.targetId : undefined,
+          typeof m.dir === 'number' ? m.dir : undefined, // facing p/ melee direcional (Fase 11)
+          m.flourish === true, // golpe carregado (Fase 13)
         );
         break;
       }

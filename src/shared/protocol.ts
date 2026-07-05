@@ -29,6 +29,7 @@ export interface PlayerState {
   wpnKind: 'melee' | 'bow' | 'staff';
   wpnDmg: number;
   wpnRange: number;
+  wpnKnock: number;    // multiplicador do empurrão da arma (Fase 16)
   spellMult: number;
   critBonus: number;   // talento Olho Mortal (clampado 0..0.15)
   chainBonus: number;  // talento Tormenta (clampado 0..1)
@@ -49,7 +50,7 @@ export type ClientMsg =
   | { t: 'state'; s: PlayerState }
   | { t: 'login'; name: string; fresh: boolean }   // fresh = "Novo Jogo": descarta o personagem salvo
   | { t: 'save'; data: unknown }                   // blob de progresso persistido por nome no SQLite
-  | { t: 'cast'; key: string; targetId?: number }  // validado pelo CombatSim no servidor
+  | { t: 'cast'; key: string; targetId?: number; dir?: number; flourish?: boolean }  // dir = facing (Fase 11); flourish = golpe carregado (Fase 13); validado pelo CombatSim
   | { t: 'stun'; id: number }                      // parry — servidor valida proximidade
   | { t: 'chat'; text: string }
   | { t: 'surrender' }

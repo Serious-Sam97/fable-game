@@ -36,6 +36,7 @@ export interface CombatStats {
   wpnKind: 'melee' | 'bow' | 'staff';
   wpnDmg: number;     // mult da arma × raridade × talentos
   wpnRange: number;   // alcance do ataque básico
+  wpnKnock: number;   // multiplicador do empurrão da arma (Fase 16)
   spellMult: number;  // cajados e talentos amplificam magia
   critBonus: number;  // talento Olho Mortal (0..0.15)
   chainBonus: number; // talento Tormenta (+1 cadeia no relâmpago)

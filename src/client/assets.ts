@@ -1,10 +1,15 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { toonRamp } from './core';
 
 // ============================================================ carregamento de GLTF
-const loader = new GLTFLoader();
+// Modelos comprimidos com Draco (Fase 49) → decoder servido localmente de /draco/.
+// O GLTFLoader detecta a compressão pela extensão KHR_draco_mesh_compression;
+// modelos não-Draco (props .glb sem compressão) carregam normalmente pelo mesmo loader.
+const draco = new DRACOLoader().setDecoderPath('/draco/');
+const loader = new GLTFLoader().setDRACOLoader(draco);
 const cache = new Map(); // url → Promise<gltf>
 
 export function loadGLTF(url) {

@@ -120,11 +120,25 @@ function buildTownHouse(x, z, w, d, rot, tpl) {
   const rows = Math.min(4, Math.max(2, Math.round(d / M)));
   const hw = cols * M / 2, hd = rows * M / 2;
   const g = new THREE.Group();
+  // O módulo de parede do kit tem a origem FORA do centro (malha deslocada ~0.45 no
+  // X local, o eixo da espessura). Como cada lado da casa usa uma rotação diferente,
+  // esse offset joga frente/fundo pra dentro e leste/oeste pra fora → degrau e vão em
+  // cada canto. Medimos o offset por peça e o cancelamos na posição, deixando toda
+  // parede rente à borda (retângulo fechado, cantos encostando).
+  const _centerX = new Map();
   const place = (name, lx, lz, ly, ry) => {
-    const o = (tpl[TOWN + name + '.glb'] || wallT).clone(true);
+    const tplO = tpl[TOWN + name + '.glb'] || wallT;
+    const o = tplO.clone(true);
     o.scale.setScalar(M);
-    o.position.set(lx, ly, lz);
     o.rotation.y = ry;
+    let cx = _centerX.get(name);
+    if (cx === undefined) {
+      const c = new THREE.Box3().setFromObject(tplO).getCenter(new THREE.Vector3());
+      cx = isFinite(c.x) ? c.x : 0;
+      _centerX.set(name, cx);
+    }
+    const off = cx * M; // offset da malha em unidades de mundo (X local, pós-escala)
+    o.position.set(lx - off * Math.cos(ry), ly, lz + off * Math.sin(ry));
     g.add(o);
   };
   const doorCol = Math.floor(cols / 2);
@@ -145,7 +159,9 @@ function buildTownHouse(x, z, w, d, rot, tpl) {
   }
   // telhado em pirâmide (4 águas) com beiral, cor telha
   const rw = Math.max(cols, rows) * M;
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(rw * 0.66, M * 1.15, 4), lambert(0xb0563a));
+  // fator 0.82: a face plana do telhado (a ~0.707·raio, virada p/ as paredes após o
+  // giro de 45°) alcança ~1.16·(meia-largura) → cobre as paredes com um beiral leve.
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(rw * 0.82, M * 1.15, 4), lambert(0xb0563a));
   roof.position.y = H * M + M * 0.55;
   roof.rotation.y = Math.PI / 4;
   roof.scale.set((cols * M) / rw, 1, (rows * M) / rw);

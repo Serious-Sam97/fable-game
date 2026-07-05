@@ -13,13 +13,15 @@ export interface WeaponDef {
   tier: number;        // 0 inicial … 3 topo
   spellBoost?: number; // cajados amplificam magia
   price?: number;      // se vendido pelo Barnum
+  swing?: number;      // ritmo do golpe melee (1 = padrão; >1 lento/pesado; <1 rápido) — Fase 16
+  knock?: number;      // multiplicador do empurrão do golpe — Fase 16
 }
 
 export const WEAPONS: Record<string, WeaponDef> = {
-  espada_gasta: { key: 'espada_gasta', name: 'Espada Gasta', kind: 'melee', mult: 1.0, range: 3.8, icon: '🗡️', tier: 0 },
-  machado:      { key: 'machado', name: 'Machado de Lenhador', kind: 'melee', mult: 1.15, range: 3.6, icon: '🪓', tier: 1, price: 90 },
-  espada_longa: { key: 'espada_longa', name: 'Espada Longa', kind: 'melee', mult: 1.25, range: 4.3, icon: '⚔️', tier: 2 },
-  martelo:      { key: 'martelo', name: 'Martelo de Guerra', kind: 'melee', mult: 1.4, range: 3.4, icon: '🔨', tier: 3 },
+  espada_gasta: { key: 'espada_gasta', name: 'Espada Gasta', kind: 'melee', mult: 1.0, range: 3.8, icon: '🗡️', tier: 0, swing: 0.9, knock: 1.0 },   // ágil
+  machado:      { key: 'machado', name: 'Machado de Lenhador', kind: 'melee', mult: 1.15, range: 3.6, icon: '🪓', tier: 1, price: 90, swing: 1.05, knock: 1.4 }, // pancada
+  espada_longa: { key: 'espada_longa', name: 'Espada Longa', kind: 'melee', mult: 1.25, range: 4.3, icon: '⚔️', tier: 2, swing: 1.0, knock: 1.0 },   // alcance
+  martelo:      { key: 'martelo', name: 'Martelo de Guerra', kind: 'melee', mult: 1.4, range: 3.4, icon: '🔨', tier: 3, swing: 1.5, knock: 2.4 },     // lento, empurrão enorme
   arco_cacador: { key: 'arco_cacador', name: 'Arco do Caçador', kind: 'bow', mult: 1.0, range: 26, icon: '🏹', tier: 1, price: 120 },
   arco_longo:   { key: 'arco_longo', name: 'Arco Longo', kind: 'bow', mult: 1.25, range: 30, icon: '🏹', tier: 3 },
   cajado_arcano:{ key: 'cajado_arcano', name: 'Cajado Arcano', kind: 'staff', mult: 0.85, range: 3.2, icon: '🪄', tier: 2, spellBoost: 1.18, price: 200 },

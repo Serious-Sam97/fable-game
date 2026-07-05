@@ -222,7 +222,7 @@ function combatStats() {
     lvl: player.level,
     str: player.disc.str.lvl, skl: player.disc.skl.lvl, wil: player.disc.wil.lvl,
     luck: player.luckCharm,
-    wpnKind: eq.kind, wpnDmg, wpnRange: eq.range,
+    wpnKind: eq.kind, wpnDmg, wpnRange: eq.range, wpnKnock: eq.def.knock ?? 1,
     spellMult: eq.spellMult * (hasTalent('chama_viva') ? 1.15 : 1),
     critBonus: hasTalent('olho_mortal') ? 0.08 : 0,
     chainBonus: hasTalent('tormenta') ? 1 : 0,
@@ -702,6 +702,14 @@ function processSimEvents() {
         if (ev.pid === myPid()) beep(520, 0.12, 'square', 0.06, 200);
         break;
       }
+      case 'eexec': { // execução de inimigo atordoado (Fase 15) — finisher com peso
+        if (v) {
+          floatText(v.pos.clone().add(new THREE.Vector3(0, 0.3, 0)), '⚔️ EXECUÇÃO!', '#ff5a3c', 26);
+          impactBurst(v.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), true);
+        }
+        if (ev.pid === myPid()) { hitStopT = Math.max(hitStopT, 0.12); shake = Math.max(shake, 0.3); beep(90, 0.25, 'sawtooth', 0.08, -60); }
+        break;
+      }
       case 'eheal': {
         const tv = enemyViews.get(ev.targetId);
         if (tv) floatText(tv.pos, '+' + ev.amount, '#6ee86e', 16);
@@ -726,6 +734,8 @@ function processSimEvents() {
         // VFX de impacto (Fase 43): flash + faíscas + sangue na altura do peito do inimigo
         impactBurst(v.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), ev.crit);
         if (mine) {
+          reticle.style.transform = ev.crit ? 'scale(2)' : 'scale(1.7)'; // hit-marker na mira (Fase 8)
+          setTimeout(() => { reticle.style.transform = 'scale(1)'; }, 90);
           // hit-stop só no meu golpe corpo-a-corpo (mais forte no crítico)
           if (ev.src !== 'ranged' && ev.src !== 'magic') hitStopT = Math.max(hitStopT, ev.crit ? 0.08 : 0.05);
           player.lastCombat = time;
@@ -803,6 +813,7 @@ selRing.rotation.x = -Math.PI / 2;
 selRing.visible = false;
 scene.add(selRing);
 let target = null;
+let lockedTarget = null; // lock-on manual (Tab) — flourish target fixo (Fase 9)
 
 // ============================================================ fx / floating text / orbs
 const effects = [];
@@ -1110,15 +1121,28 @@ function requestStun(enemyId) {
 function damagePlayer(dmg, attacker = null) {
   if (player.dead) return;
   if (player.invulnT > 0) {
-    floatText(player.pos, 'esquivou!', '#e8d05a', 15);
+    // esquiva PERFEITA (Fase 18): dodge no último instante (i-frames ainda altos) → recompensa
+    if (player.invulnT > 0.28 && attacker) {
+      floatText(player.pos, '✦ PERFEITA!', '#9ad0ff', 22);
+      hitStopT = Math.max(hitStopT, 0.14);                         // slow-mo = janela de contra-ataque
+      player.stam = Math.min(player.maxStam, player.stam + 22);    // devolve fôlego (recompensa a esquiva justa)
+      beep(1500, 0.16, 'sine', 0.06, 300);
+    } else {
+      floatText(player.pos, 'esquivou!', '#e8d05a', 15);
+    }
     return;
   }
   // bloqueio (Q segurado): reduz 60%; na janela de 0.3s vira PARRY e atordoa
   if (player.blocking && player.stam >= 8) {
     if (attacker && time - player.blockStartT < 0.3) {
+      // PARRY PERFEITO (Fase 17): atordoa o atacante (→ fica executável, Fase 15) com feedback forte
       player.stam -= 4;
-      floatText(player.pos, '⚔️ APARADO!', '#ffe9a8', 20);
+      floatText(player.pos, '⚔️ APARADO!', '#ffe9a8', 22);
       beep(1250, 0.14, 'square', 0.06, -250);
+      hitStopT = Math.max(hitStopT, 0.1);        // slow-mo do parry perfeito
+      shake = Math.max(shake, 0.22);
+      ringEffect(player.pos, 0xffe9a8, 2.2);     // clarão dourado
+      if (attacker.pos) impactBurst(attacker.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), true); // faíscas no atacante
       requestStun(attacker.id);
       return;
     }
@@ -1138,14 +1162,21 @@ function damagePlayer(dmg, attacker = null) {
 }
 
 function tryRoll() {
-  if (player.dead || !started || player.rollT > 0 || !player.onGround) return;
+  if (player.dead || !started || !player.onGround) return;
+  if (player.rollT > 0) { player.rollBuf = time; return; } // buffer: dispara ao terminar o rolamento (Fase 7)
   const cost = rollCost();
   if (player.stam < cost) { errorMsg('Sem fôlego!'); return; }
   player.stam -= cost;
   player.rollT = 0.35;
   player.invulnT = 0.45;
-  player.rollDirX = player.lastDirX;
-  player.rollDirZ = player.lastDirZ;
+  // direção do dodge: WASD atual relativo à câmera; sem input → backstep (pra trás da mira)
+  const fw = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+  const st = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+  const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw), rx = -fz, rz = fx;
+  let dx = fx * fw + rx * st, dz = fz * fw + rz * st;
+  const dl = Math.hypot(dx, dz);
+  if (dl > 0.01) { dx /= dl; dz /= dl; } else { dx = -fx; dz = -fz; } // sem input → backstep
+  player.rollDirX = dx; player.rollDirZ = dz;
   player.lastCombat = time;
   noiseBurst(0.12, 0.04);
   beep(300, 0.12, 'sine', 0.04, -120);
@@ -1185,13 +1216,14 @@ function changeMorality(amt) {
 // dano/alcance/cooldown são decididos pelo CombatSim (servidor online, local solo);
 // aqui ficam só a pré-validação de UI e os efeitos imediatos do próprio herói
 const combatLocal = new CombatSim(localSim);
-function castAbility(key, tgt) {
+function castAbility(key, tgt, flourish = false) {
+  const dir = heroModel.group.rotation.y; // facing p/ o golpe melee direcional (Fase 11)
   if (net.connected) {
-    sendMsg({ t: 'cast', key, targetId: tgt ? tgt.id : undefined });
+    sendMsg({ t: 'cast', key, targetId: tgt ? tgt.id : undefined, dir, flourish });
   } else {
     combatLocal.cast(
       { id: 0, x: player.pos.x, z: player.pos.z, ...combatStats() },
-      key, tgt ? tgt.id : undefined,
+      key, tgt ? tgt.id : undefined, dir, flourish,
     );
   }
 }
@@ -1286,6 +1318,68 @@ function tryAbility(i) {
   setTimeout(() => slotEls[i].classList.remove('flash'), 180);
 }
 slotEls.forEach((el) => el.addEventListener('click', () => tryAbility(+el.dataset.i)));
+// Fase 9: hotbar de habilidades aposentada (LMB/RMB/E cobrem os ataques) → esconde os slots antigos
+document.querySelectorAll('#actionbar .slot.ab, #actionbar .abgap').forEach((el) => { el.style.display = 'none'; });
+
+// ---------- ataque melee de ação (Fase 3 combate) ----------
+// escolhe o inimigo vivo mais alinhado à mira (cone frontal, dentro do alcance)
+function frontalTarget(reach) {
+  const face = heroModel.group.rotation.y;       // herói encara a câmera (Fase 2)
+  const fx = Math.sin(face), fz = Math.cos(face); // vetor "pra onde olho"
+  let best = null, bestScore = -1;
+  for (const e of enemies) {
+    if (e.state === 'dead' || e.state === 'surrender') continue;
+    const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > reach) continue;
+    const dot = d > 0.01 ? (dx * fx + dz * fz) / d : 1; // alinhamento com a mira
+    if (dot < 0.25) continue;                            // cone frontal (~150°)
+    const score = dot - d * 0.08;                        // prefere alinhado e perto
+    if (score > bestScore) { bestScore = score; best = e; }
+  }
+  return best;
+}
+// LMB: golpe na direção que olho, sem Tab-alvo. Usa o soft-lock (Fase 4) se estiver no alcance,
+// senão pega o alvo frontal; dispara pelo pipeline existente (tryAbility: GCD, cooldown, cast,
+// combo no servidor) com um lunge leve pro alvo. Sem alvo → golpe no ar.
+const LUNGE_T = 0.13, MELEE_CD = 0.36, FLOURISH_TIME = 0.5; // ritmo/carga do melee (Fase 12/13)
+let meleeReadyT = 0, chargeStartT = -1; // chargeStartT>=0 = segurando LMB pra carregar o flourish
+function meleeAttack(flourish = false) {
+  if (player.dead || !started || time < meleeReadyT) return;
+  const bow = equippedStats().kind === 'bow';
+  if (bow) flourish = false; // flourish é só melee
+  const reach = equippedStats().range * (flourish ? 1.2 : 1);
+  const inReach = (e) => e && e.state !== 'dead' && e.state !== 'surrender'
+    && Math.hypot(e.pos.x - player.pos.x, e.pos.z - player.pos.z) <= reach;
+  const t = inReach(target) ? target : frontalTarget(reach);
+  if (bow && !t) return; // arco precisa de alvo; o melee varre o arco frontal (Fase 11) — não precisa
+  if (t) {
+    // lunge pro alvo (mais forte no flourish) — fecha o vão até a borda, nunca atravessa
+    const dx = t.pos.x - player.pos.x, dz = t.pos.z - player.pos.z, d = Math.hypot(dx, dz) || 1;
+    const ld = Math.min(Math.max(0, d - reach * 0.7), flourish ? 1.6 : 0.9);
+    if (ld > 0.05) { player.lungeT = LUNGE_T; player.lungeDX = (dx / d) * (ld / LUNGE_T); player.lungeDZ = (dz / d) * (ld / LUNGE_T); }
+    setTarget(t);
+  }
+  if (flourish) { // Fase 13: golpe carregado — forte, derruba/atordoa (dano/stun no servidor)
+    player.swingT = 0.5; beep(120, 0.2, 'sawtooth', 0.06, -90); shake = 0.22;
+    castAbility('golpe', t || null, true);
+  } else {
+    abilities[0].use(t || null); // swing + cast; o arco frontal (Fase 11) pega quem está à frente
+  }
+  player.lastCombat = time;
+  meleeReadyT = time + (flourish ? 0.5 : MELEE_CD * (equippedStats().def.swing ?? 1)); // ritmo por arma (Fase 16)
+}
+// RMB: ataque à distância (arco). Atira no alvo do soft-lock/frontal na direção da mira.
+// Só com arco equipado (multi-arma melee+arco simultâneos: Bloco C). Tensionar/carga: Fase 21.
+function rangedAttack() {
+  if (player.dead || !started) return;
+  if (equippedStats().kind !== 'bow') return; // sem arco, RMB é no-op por ora
+  const t = (target && target.state !== 'dead' && target.state !== 'surrender')
+    ? target : frontalTarget(equippedStats().range);
+  if (!t) { errorMsg('Sem alvo à frente'); return; }
+  setTarget(t);
+  tryAbility(0); // golpe com arco = dispara a flecha pelo pipeline existente
+}
 
 function usePotion(kind) {
   if (player.dead || !started) return;
@@ -2338,28 +2432,26 @@ function groundAlign(obj, x, z, yaw) {
 // ============================================================ input
 const keys = {};
 let camYaw = 0.6, camPitch = 0.36, camDist = 11;
+const camFollow = new THREE.Vector3(); let camFollowInit = false; // follow suavizado (Fase 8)
 
 addEventListener('keydown', (ev) => {
   if (!started) return;
   if (chatOpen) return; // digitando no chat — o input trata as teclas
-  if (ev.code === 'Enter') { openChat(); return; }
+  if (ev.code === 'Enter') { unlockMouse(); openChat(); return; }
   if (ev.code === 'Tab') {
     ev.preventDefault();
-    let best = null, bd = 45;
-    for (const e of enemies) {
-      if (e.state === 'dead' || e.state === 'surrender') continue;
-      const d = e.pos.distanceTo(player.pos);
-      if (d < bd) { bd = d; best = e; }
-    }
-    if (best) { setTarget(best); beep(880, 0.05, 'sine', 0.03); }
+    // Fase 9: Tab-alvo aposentado (o soft-lock automático o substituiu). Tab agora é LOCK-ON
+    // (flourish target): trava/destrava no alvo atual, que passa a ficar fixo mesmo olhando pra longe.
+    if (lockedTarget) { lockedTarget = null; toast('🔓 Lock-on solto'); beep(440, 0.05, 'sine', 0.03); }
+    else if (target) { lockedTarget = target; toast('🔒 Lock-on'); beep(880, 0.05, 'sine', 0.03); }
     return;
   }
   if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; if (fishing.active) endFishing(); return; }
   if (fishing.active) { if (ev.code === 'Space') { ev.preventDefault(); hookFish(); } return; }
-  if (ev.code === 'KeyF') { const it = nearestInteract(); if (it) it.cb(); return; }
-  if (ev.code === 'KeyC') { toggleCharPanel(); return; }
-  if (ev.code === 'KeyI') { toggleInventory(); return; }
-  if (ev.code === 'KeyT') { toggleTalents(); return; }
+  if (ev.code === 'KeyF') { unlockMouse(); const it = nearestInteract(); if (it) it.cb(); return; }
+  if (ev.code === 'KeyC') { unlockMouse(); toggleCharPanel(); return; }
+  if (ev.code === 'KeyI') { unlockMouse(); toggleInventory(); return; }
+  if (ev.code === 'KeyT') { unlockMouse(); toggleTalents(); return; }
   if (ev.code === 'ShiftLeft' || ev.code === 'ShiftRight') { tryRoll(); return; }
   if (ev.code === 'KeyQ' && !ev.repeat) {
     player.blocking = true;
@@ -2367,11 +2459,14 @@ addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.code === 'KeyM') { toast(toggleMusic() ? '🎵 Música ligada' : '🔇 Música desligada'); return; }
+  if (ev.code === 'KeyE' && !ev.repeat) { tryAbility(activeSpell); return; } // lança o feitiço ativo (Fase 6)
+  if (ev.code === 'KeyR' && !ev.repeat) { openRadial(); return; }            // abre a roda de feitiços (Fase 6)
   if (ev.code.startsWith('Digit')) {
+    // Fase 9: hotbar 1-8 aposentada (LMB melee / RMB arco / E magia cobrem os ataques).
+    // Sobram poções: 1 = vida, 2 = vontade.
     const n = +ev.code.slice(5);
-    if (n >= 1 && n <= 6) tryAbility(n - 1);
-    if (n === 7) usePotion('hp');
-    if (n === 8) usePotion('will');
+    if (n === 1) usePotion('hp');
+    if (n === 2) usePotion('will');
     return;
   }
   keys[ev.code] = true;
@@ -2379,14 +2474,103 @@ addEventListener('keydown', (ev) => {
 addEventListener('keyup', (ev) => {
   keys[ev.code] = false;
   if (ev.code === 'KeyQ') player.blocking = false;
+  if (ev.code === 'KeyR') closeRadial(); // solta R → seleciona o feitiço destacado (Fase 6)
 });
 
+// ---------- câmera mouselook (Fase 1 combate) ----------
+// Mouse = câmera livre (pointer-lock). Sob lock, mover o mouse gira a câmera;
+// LMB seleciona o que está na mira (centro). Sem lock (menu aberto, ou antes do
+// 1º clique), cai no drag orbital antigo — o jogo nunca fica sem controle.
 let dragging = false, dragMoved = 0, lastMX = 0, lastMY = 0;
+let mouseLocked = false;
+const LOOK_SENS = 0.0025; // sensibilidade do mouselook (Fase 48: expor no menu/invert-Y)
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+function unlockMouse() { if (document.pointerLockElement) document.exitPointerLock(); }
+function canLock() {
+  // "aberto" = display computado != none (os painéis nascem escondidos por CSS, com style inline "")
+  const shown = (el) => !!el && getComputedStyle(el).display !== 'none';
+  return started && !chatOpen && !fishing.active
+    && !shown(dialog) && !shown($('charPanel')) && !shown($('invPanel')) && !shown($('talPanel'));
+}
+// retícula de mira (Fase 5): crosshair no centro, visível durante o mouselook
+const reticle = document.createElement('div');
+reticle.id = 'reticle';
+reticle.style.cssText = 'position:fixed;left:50%;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border:2px solid rgba(255,255,255,0.5);border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,0.6);transition:transform .09s ease-out;pointer-events:none;z-index:6;display:none;';
+document.body.appendChild(reticle);
+document.addEventListener('pointerlockchange', () => {
+  mouseLocked = document.pointerLockElement === canvas;
+  reticle.style.display = mouseLocked ? 'block' : 'none';
+  if (!mouseLocked) chargeStartT = -1; // destravou no meio da carga → cancela (Fase 13)
+});
+
+// ---------- roda de feitiços (Fase 6): segurar R abre, mouse escolhe a fatia, solta seleciona ----------
+const SPELL_SLOTS = [1, 2, 3, 4, 5];                       // índices em `abilities` (os feitiços)
+const SPELL_ICON = { 1: '🔥', 2: '⚡', 3: '💨', 4: '⏳', 5: '💚' };
+let activeSpell = 1;                                        // feitiço ativo (tecla E lança este)
+let radialOpen = false, radialSel = 1, radMX = 0, radMY = 0;
+const radialEl = document.createElement('div');
+radialEl.id = 'spellRadial';
+radialEl.style.cssText = 'position:fixed;left:50%;top:50%;width:260px;height:260px;margin:-130px 0 0 -130px;pointer-events:none;z-index:20;display:none;';
+const radialItems = SPELL_SLOTS.map((si, k) => {
+  const a = (k / SPELL_SLOTS.length) * Math.PI * 2 - Math.PI / 2; // k=0 no topo, sentido horário
+  const el = document.createElement('div');
+  el.textContent = SPELL_ICON[si];
+  el.style.cssText = `position:absolute;left:${130 + Math.cos(a) * 96}px;top:${130 + Math.sin(a) * 96}px;width:52px;height:52px;margin:-26px 0 0 -26px;display:flex;align-items:center;justify-content:center;font-size:26px;border-radius:50%;background:rgba(20,16,10,0.82);border:2px solid rgba(255,220,150,0.4);transition:transform .08s;`;
+  radialEl.appendChild(el); return el;
+});
+document.body.appendChild(radialEl);
+const spellHud = document.createElement('div'); // indicador do feitiço ativo
+spellHud.id = 'activeSpell';
+spellHud.style.cssText = 'position:fixed;right:14px;bottom:72px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;font-size:24px;border-radius:8px;background:rgba(20,16,10,0.8);border:2px solid rgba(255,220,150,0.55);z-index:6;pointer-events:none;';
+document.body.appendChild(spellHud);
+function updateSpellHud() { spellHud.textContent = SPELL_ICON[activeSpell]; }
+updateSpellHud();
+function updateRadialHighlight() {
+  radialItems.forEach((el, k) => {
+    const on = SPELL_SLOTS[k] === radialSel;
+    el.style.transform = on ? 'scale(1.28)' : 'scale(1)';
+    el.style.borderColor = on ? 'rgba(255,225,160,1)' : 'rgba(255,220,150,0.4)';
+    el.style.background = on ? 'rgba(75,52,20,0.96)' : 'rgba(20,16,10,0.82)';
+  });
+}
+function openRadial() {
+  if (!started || radialOpen) return;
+  radialOpen = true; radialSel = activeSpell; radMX = 0; radMY = 0;
+  radialEl.style.display = 'block'; updateRadialHighlight();
+}
+function closeRadial() {
+  if (!radialOpen) return;
+  radialOpen = false; radialEl.style.display = 'none';
+  activeSpell = radialSel; updateSpellHud();
+}
+
 canvas.addEventListener('mousedown', (e) => {
-  dragging = true; dragMoved = 0; lastMX = e.clientX; lastMY = e.clientY;
+  if (mouseLocked) {
+    if (e.button === 0 && started) chargeStartT = time; // segura LMB → carrega flourish; solta → golpe (Fase 13)
+    else if (e.button === 2 && started) rangedAttack(); // RMB = à distância / arco (Fase 5)
+    return;
+  }
+  // qualquer clique no jogo engata o mouselook (o navegador só trava o cursor a partir de um gesto)
+  if (started && canLock()) canvas.requestPointerLock();
+  dragging = true; dragMoved = 0; lastMX = e.clientX; lastMY = e.clientY; // drag = fallback se o lock não pegar
 });
 addEventListener('mousemove', (e) => {
+  if (radialOpen) { // com a roda aberta, o mouse escolhe a fatia (não move a câmera)
+    radMX += e.movementX; radMY += e.movementY;
+    if (Math.hypot(radMX, radMY) > 14) { // deadzone no centro
+      const ang = Math.atan2(radMX, -radMY); // 0 = cima, sentido horário
+      let k = Math.round(ang / (Math.PI * 2 / SPELL_SLOTS.length));
+      k = ((k % SPELL_SLOTS.length) + SPELL_SLOTS.length) % SPELL_SLOTS.length;
+      if (SPELL_SLOTS[k] !== radialSel) { radialSel = SPELL_SLOTS[k]; updateRadialHighlight(); }
+    }
+    return;
+  }
+  if (mouseLocked) {
+    camYaw -= e.movementX * LOOK_SENS;
+    camPitch = clamp(camPitch + e.movementY * LOOK_SENS, 0.06, 1.35);
+    return;
+  }
   if (!dragging) return;
   const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
   dragMoved += Math.abs(dx) + Math.abs(dy);
@@ -2395,28 +2579,33 @@ addEventListener('mousemove', (e) => {
   camPitch = clamp(camPitch + dy * 0.005, 0.06, 1.35);
 });
 addEventListener('mouseup', (e) => {
-  if (dragging && dragMoved < 6 && e.button === 0 && e.target === canvas && started) doClick(e);
   dragging = false;
+  if (e.button === 0 && chargeStartT >= 0) { // soltou LMB → flourish se segurou o bastante, senão golpe normal (Fase 13)
+    const held = time - chargeStartT;
+    chargeStartT = -1;
+    reticle.style.transform = 'scale(1)';
+    meleeAttack(held >= FLOURISH_TIME);
+  }
 });
 canvas.addEventListener('wheel', (e) => {
   camDist = clamp(camDist + e.deltaY * 0.01, 4, 28);
 }, { passive: true });
 
 const raycaster = new THREE.Raycaster();
-function doClick(e) {
-  const mouse = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+function doClickAt(ndcX, ndcY) {
+  const mouse = new THREE.Vector2(ndcX, ndcY);
   raycaster.setFromCamera(mouse, camera);
   // NPCs first
   for (const n of npcs) {
     if (raycaster.intersectObject(n.model.group, true).length) {
-      if (player.pos.distanceTo(n.pos) < 7) talkTo(n);
+      if (player.pos.distanceTo(n.pos) < 7) { unlockMouse(); talkTo(n); }
       else errorMsg('Aproxime-se para conversar');
       return;
     }
   }
   const ldr = getLeader();
   if (ldr && ldr.state === 'surrender' && raycaster.intersectObject(ldr.model.group, true).length) {
-    if (player.pos.distanceTo(ldr.pos) < 6) confrontLeader();
+    if (player.pos.distanceTo(ldr.pos) < 6) { unlockMouse(); confrontLeader(); }
     return;
   }
   let best = null, bestD = Infinity;
@@ -2558,7 +2747,7 @@ function startGame(fromSave) {
         luck: player.luckCharm,
         str: cs.str, skl: cs.skl, wil: cs.wil,
         wpn: player.equipped.wpn,
-        wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, spellMult: cs.spellMult,
+        wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, wpnKnock: cs.wpnKnock, spellMult: cs.spellMult,
         critBonus: cs.critBonus, chainBonus: cs.chainBonus, wanted: isWanted(),
         aHead: player.armor.head?.arm ?? '', aChest: player.armor.chest?.arm ?? '',
         aLegs: player.armor.legs?.arm ?? '', aBoots: player.armor.boots?.arm ?? '',
@@ -3073,6 +3262,7 @@ function tick() {
     const st = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
     const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
     const rx = -fz, rz = fx;
+    const faceY = Math.atan2(fx, fz); // direção da câmera (pra onde olho)
     let mx = fx * fw + rx * st, mz = fz * fw + rz * st;
     const ml = Math.hypot(mx, mz);
     if (player.rollT > 0) {
@@ -3084,18 +3274,28 @@ function tick() {
       );
       heroModel.group.rotation.y = Math.atan2(player.rollDirX, player.rollDirZ);
       heroModel.group.rotation.x = (1 - player.rollT / 0.35) * Math.PI * 2;
-      if (player.rollT <= 0) heroModel.group.rotation.x = 0;
+      if (player.rollT <= 0) {
+        heroModel.group.rotation.x = 0;
+        if (player.rollBuf && time - player.rollBuf < 0.3) { player.rollBuf = 0; tryRoll(); } // dodge bufferado
+      }
     } else if (ml > 0) {
       mx /= ml; mz /= ml;
       player.lastDirX = mx; player.lastDirZ = mz;
       const speed = 9;
       movePlayerTo(player.pos.x + mx * speed * dt, player.pos.z + mz * speed * dt);
-      heroModel.group.rotation.y = Math.atan2(mx, mz);
+      // Fase 2: herói encara a câmera (não o movimento) → W frente, A/D strafe, S ré,
+      // todos mirando pra onde olho. (Anims de strafe/ré dedicadas: refino do Bloco B.)
+      heroModel.group.rotation.y = faceY;
       player.walkT += dt * 9;
     } else {
       player.walkT *= 0.8;
     }
-    player.moving = ml > 0 || player.rollT > 0;
+    // lunge de ataque (Fase 4): passo curto pro alvo ao golpear
+    if (player.lungeT > 0) {
+      player.lungeT -= dt;
+      movePlayerTo(player.pos.x + player.lungeDX * dt, player.pos.z + player.lungeDZ * dt);
+    }
+    player.moving = ml > 0 || player.rollT > 0 || player.lungeT > 0;
     // passos por superfície (o pé no chão dita o som)
     if (ml > 0 && player.onGround) {
       let surface = 'grass';
@@ -3115,6 +3315,10 @@ function tick() {
     }
   }
   heroModel.group.position.copy(player.pos);
+  // bugfix (Fase 18): a cambalhota do rolamento girava `rotation.x` em torno dos PÉS (origem do grupo
+  // no chão) → o corpo mergulhava no chão. Levanta o grupo num arco (rc·(1-cos θ)) pra pivotar no
+  // CENTRO do herói — a cambalhota fica acima do chão o giro inteiro.
+  if (player.rollT > 0) heroModel.group.position.y += 1.2 * (1 - Math.cos(heroModel.group.rotation.x));
   // pés do herói na inclinação (Fase 41): tilt no wrapper (frame local do group), suave; nunca
   // rolando ou no ar (aí o group faz o giro do rolamento). Compensa o yaw do group ao mapear a normal.
   if (heroActor) {
@@ -3248,6 +3452,20 @@ function tick() {
   updateParticles(dt);   // partículas pooladas (Fase 47)
   updateSpellLights(dt); // pulso das luzes de magia (pool fixo, Fase 44)
 
+  // ---------- soft-lock frontal (Fase 4): mira automática no inimigo à frente, sem Tab ----------
+  if (started && !player.dead) {
+    if (lockedTarget && (lockedTarget.state === 'dead' || lockedTarget.state === 'surrender')) lockedTarget = null;
+    // com lock-on, o alvo fica fixo; senão, soft-lock frontal (mira alcança um pouco além do golpe)
+    const sl = lockedTarget || frontalTarget(equippedStats().range + 5);
+    if (sl !== target) setTarget(sl);
+    if (chargeStartT >= 0) { // indicador de carga do flourish (Fase 13): a retícula cresce e esquenta
+      const ch = Math.min((time - chargeStartT) / FLOURISH_TIME, 1);
+      reticle.style.transform = `scale(${(1 + ch * 1.3).toFixed(2)})`;
+      reticle.style.borderColor = ch >= 1 ? 'rgba(255,210,70,1)' : 'rgba(255,150,60,0.9)';
+    } else {
+      reticle.style.borderColor = target ? 'rgba(255,90,90,0.85)' : 'rgba(255,255,255,0.5)'; // vermelho ao travar
+    }
+  }
   // ---------- selection ring ----------
   if (target && target.state !== 'dead' && target.state !== 'surrender') {
     selRing.position.set(target.pos.x, target.pos.y + 0.08, target.pos.z);
@@ -3256,7 +3474,10 @@ function tick() {
   }
 
   // ---------- camera ----------
-  let lookPos = player.pos;
+  // suavização do follow (Fase 8): a câmera desliza até o herói, escondendo o jitter de dodge/lunge/terreno
+  if (!camFollowInit) { camFollow.copy(player.pos); camFollowInit = true; }
+  camFollow.lerp(player.pos, started ? 1 - Math.exp(-dt * 16) : 1);
+  let lookPos = camFollow;
   if (!started) {
     camYaw += dt * 0.05;
     camDist = 16;
@@ -3265,7 +3486,10 @@ function tick() {
   const cx = Math.sin(camYaw) * Math.cos(camPitch) * camDist;
   const cy = Math.sin(camPitch) * camDist;
   const cz = Math.cos(camYaw) * Math.cos(camPitch) * camDist;
-  camera.position.set(lookPos.x + cx, lookPos.y + 1.6 + cy, lookPos.z + cz);
+  // leve offset over-the-shoulder (herói fica um pouco à esquerda do centro)
+  const sh = started ? 0.8 : 0;
+  const rx = Math.cos(camYaw) * sh, rz = -Math.sin(camYaw) * sh;
+  camera.position.set(lookPos.x + cx + rx, lookPos.y + 1.6 + cy, lookPos.z + cz + rz);
   const camGround = terrainHeight(camera.position.x, camera.position.z) + 0.5;
   if (camera.position.y < camGround) camera.position.y = camGround;
   if (shake > 0) {
@@ -3273,7 +3497,7 @@ function tick() {
     camera.position.x += (Math.random() - 0.5) * shake;
     camera.position.y += (Math.random() - 0.5) * shake;
   }
-  camera.lookAt(lookPos.x, lookPos.y + 2, lookPos.z);
+  camera.lookAt(lookPos.x + rx, lookPos.y + 2, lookPos.z + rz);
 
   // ---------- HUD ----------
   if (started) {
@@ -3396,6 +3620,9 @@ window.FABLE = {
   perf: () => ({ frameMs: +_frameMs.toFixed(2), fps: Math.round(1000 / _frameMs), // orçamento + pools (Fase 47)
     particlePool: { total: _partFree.length + _partActive.length, active: _partActive.length, free: _partFree.length },
     effects: effects.length }),
+  // debug do combate de ação (Blocos A/B) — ações são gated por pointer-lock, então testamos por aqui
+  combat: { attack: () => meleeAttack(), flourish: () => meleeAttack(true), ranged: () => rangedAttack(), castSpell: () => tryAbility(activeSpell), dodge: () => tryRoll(), frontal: (r) => frontalTarget(r ?? equippedStats().range + 1.2), radial: { open: openRadial, close: closeRadial, sel: (s) => { radialSel = s; } } },
+  get camYaw() { return camYaw; }, get mouseLocked() { return mouseLocked; }, get target() { return target; }, get activeSpell() { return activeSpell; }, get radialOpen() { return radialOpen; }, get lockedTarget() { return lockedTarget; },
 };
 
 updateHeroBody(); // arma inicial na mão + visual das disciplinas
