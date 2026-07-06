@@ -15,9 +15,9 @@ import {
 } from './models';
 import { TALENTS, TREE_LABEL, talentsByTree } from '../shared/defs/talents';
 import { ENEMY_DEFS, FACE_X_TYPES } from '../shared/defs/enemies';
-import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED } from '../shared/defs/abilities';
+import { ABILITIES, FIREBALL_SPEED, ARROW_SPEED, PERK_QUAKE, PERK_PIERCE, PERK_TWIN } from '../shared/defs/abilities';
 import { WEAPONS, ARMORS, RARITIES, rarityOf, rollDrop, sellPrice, itemDef } from '../shared/defs/items';
-import { connectNet, net, sendMsg, drainEvents, drainChat } from './net';
+import { connectNet, net, sendMsg, drainEvents, drainChat, sampleEntity, INTERP_DELAY_MS } from './net';
 import { loadGLTF, Actor, envUniform, rimStrengthU, nightDimU, RIM } from './assets';
 import { EnemySim } from '../shared/sim/enemies';
 import { CombatSim } from '../shared/sim/combat';
@@ -118,7 +118,8 @@ const player = {
   potions: { hp: 2, will: 1 },
   kicks: 0, kills: 0, luckCharm: false,
   walkT: 0, swingT: 0, lastCombat: -99,
-  mult: 0, multT: 0, slowT: 0,
+  mult: 0, slowT: 0,
+  shieldT: 0, shieldLvl: 1, // Escudo Arcano (Fase 25) — absorção temporária local
   achKick: false,
   // disciplinas Fable — você vira o que você usa
   disc: { str: { lvl: 0, xp: 0 }, skl: { lvl: 0, xp: 0 }, wil: { lvl: 0, xp: 0 } },
@@ -129,6 +130,7 @@ const player = {
   // fôlego para rolamento (Shift) e bloqueio (Q) — armadura pesada cansa mais
   stam: 100, maxStam: 100,
   rollT: 0, rollDirX: 0, rollDirZ: 1, invulnT: 0,
+  knockX: 0, knockZ: 0,                     // knockback previsto ao apanhar (Fase 34) — reação local instantânea
   lastDirX: 0, lastDirZ: 1,
   blocking: false, blockStartT: -99,
   fish: 0,                                  // peixes na sacola (vendáveis)
@@ -161,13 +163,16 @@ function updateMoralityVisuals() {
 }
 
 // ============================================================ disciplinas & arma equipada
-const discXpToNext = (lvl) => 60 + lvl * 55;
+// Fase 45: cada disciplina tem a PRÓPRIA curva de XP → subir de nível "sente" diferente por escola.
+// Força sobe barato (você bate o tempo todo); Habilidade no meio; Vontade é potente, então sobe devagar.
+const DISC_CURVE = { str: { base: 52, step: 46 }, skl: { base: 60, step: 56 }, wil: { base: 72, step: 70 } };
+const discXpToNext = (kind, lvl) => DISC_CURVE[kind].base + lvl * DISC_CURVE[kind].step;
 const DISC_LABEL = { str: '💪 Força', skl: '🎯 Habilidade', wil: '✨ Vontade' };
 
 function recomputeMaxes() {
   player.maxHp = maxHpFor(player.level) + player.disc.str.lvl * 8
     + (hasTalent('vigor') ? 30 : 0) + (hasTalent('colosso') ? 60 : 0);
-  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 5
+  player.maxWill = maxWillFor(player.level) + player.disc.wil.lvl * 7 // Fase 26: Vontade investida engorda mais o pool (sustenta o estilo mágico)
     + (hasTalent('poco_arcano') ? 20 : 0);
   player.maxStam = 100 + (hasTalent('folego') ? 25 : 0);
   player.hp = Math.min(player.hp, player.maxHp);
@@ -179,8 +184,8 @@ function gainDiscXP(kind, amt) {
   const d = player.disc[kind];
   if (!d || d.lvl >= 50 || amt <= 0) return;
   d.xp += amt;
-  while (d.xp >= discXpToNext(d.lvl)) {
-    d.xp -= discXpToNext(d.lvl);
+  while (d.xp >= discXpToNext(kind, d.lvl)) {
+    d.xp -= discXpToNext(kind, d.lvl);
     d.lvl++;
     toast(`${DISC_LABEL[kind]} subiu para ${d.lvl}!`);
     beep(700 + d.lvl * 12, 0.18, 'sine', 0.06, 150);
@@ -190,6 +195,34 @@ function gainDiscXP(kind, amt) {
   }
 }
 
+function weaponStatsOf(wpnKey, rarKey) { // stats de uma arma qualquer (equipada ou do inventário) — Fase 27
+  const w = WEAPONS[wpnKey] ?? WEAPONS.espada_gasta;
+  const rar = rarityOf(rarKey);
+  return { def: w, rar, dmg: w.mult * rar.mult, range: w.range, kind: w.kind, spellMult: w.spellBoost ?? 1 };
+}
+// Fase 27: dois "slots" lógicos derivados do equipado + inventário → intercalar espada/arco sem trocar no menu.
+// LMB usa a melhor melee que você possui; RMB usa o melhor arco que você possui; magia (E) usa a arma equipada.
+function bestOwnedWeapon(pred) {
+  let best = null, bestDmg = -1;
+  const consider = (it) => {
+    if (!it || !it.wpn) return; const w = WEAPONS[it.wpn]; if (!w || !pred(w)) return;
+    const dmg = w.mult * rarityOf(it.rar).mult;
+    if (dmg > bestDmg) { bestDmg = dmg; best = it; }
+  };
+  consider(player.equipped);
+  for (const it of player.inventory) consider(it);
+  return best;
+}
+function meleeWeaponItem() { // equipado se for melee/cajado; senão a melhor melee que possui; senão espada padrão
+  const eqW = WEAPONS[player.equipped.wpn];
+  if (eqW && eqW.kind !== 'bow') return player.equipped;
+  return bestOwnedWeapon((w) => w.kind !== 'bow') ?? { wpn: 'espada_gasta', rar: 'comum' };
+}
+function bowWeaponItem() { // equipado se for arco; senão o melhor arco que possui (null = não tem arco → RMB no-op)
+  const eqW = WEAPONS[player.equipped.wpn];
+  if (eqW && eqW.kind === 'bow') return player.equipped;
+  return bestOwnedWeapon((w) => w.kind === 'bow');
+}
 function equippedStats() {
   const w = WEAPONS[player.equipped.wpn] ?? WEAPONS.espada_gasta;
   const rar = rarityOf(player.equipped.rar);
@@ -212,8 +245,7 @@ function totalWeight() {
 const damageReduction = () => { const d = totalDefense(); return d / (d + 25); };
 const rollCost = () => (30 + totalWeight() * 2.5) * (hasTalent('reflexos') ? 0.75 : 1);
 const stamRegen = () => Math.max(6, 16 - totalWeight() * 1.2);
-function combatStats() {
-  const eq = equippedStats();
+function combatStats(eq = equippedStats()) { // Fase 27: eq pode ser a arma de OUTRO slot (melee/arco), não só a equipada
   // talentos entram nos multiplicadores declarados (o servidor clampa em faixas sãs)
   const wpnDmg = eq.dmg
     * (eq.kind === 'melee' && hasTalent('golpe_brutal') ? 1.15 : 1)
@@ -226,6 +258,10 @@ function combatStats() {
     spellMult: eq.spellMult * (hasTalent('chama_viva') ? 1.15 : 1),
     critBonus: hasTalent('olho_mortal') ? 0.08 : 0,
     chainBonus: hasTalent('tormenta') ? 1 : 0,
+    // Fase 45: perks capstone que mudam o moveset (bitfield; o servidor mascara a 0..7)
+    perks: (hasTalent('terremoto') ? PERK_QUAKE : 0)
+      | (hasTalent('flecha_perfurante') ? PERK_PIERCE : 0)
+      | (hasTalent('conjuracao_gemea') ? PERK_TWIN : 0),
   };
 }
 
@@ -580,14 +616,10 @@ function syncEnemies(dt) {
     seen.add(s.id);
     const v = ensureEnemyView(s);
     if (net.connected) {
-      // interpolação até o último snapshot do servidor
-      const k = Math.min(1, dt * 12);
-      v.pos.x += (s.x - v.pos.x) * k;
-      v.pos.z += (s.z - v.pos.z) * k;
-      let dr = s.ry - v.ry;
-      while (dr > Math.PI) dr -= Math.PI * 2;
-      while (dr < -Math.PI) dr += Math.PI * 2;
-      v.ry += dr * Math.min(1, dt * 10);
+      // Fase 31: interpolação de entidade — renderiza ~100ms no passado, entre os 2 snapshots que cercam
+      const smp = sampleEntity('e' + s.id, performance.now() - INTERP_DELAY_MS);
+      if (smp) { v.pos.x = smp.x; v.pos.z = smp.z; v.ry = smp.ry; }
+      else { v.pos.x = s.x; v.pos.z = s.z; v.ry = s.ry; }
     } else {
       v.pos.x = s.x; v.pos.z = s.z; v.ry = s.ry;
     }
@@ -656,10 +688,20 @@ function processSimEvents() {
         if (v) floatText(v.pos, '!', '#ff6a6a', 20);
         if (v && v.type === 'balverine') { noiseBurst(0.5, 0.09); beep(90, 0.7, 'sawtooth', 0.08, -30); }
         break;
+      case 'ewind': { // Fase 41: TELEGRAFIA do golpe — o inimigo rearma; dá pra LER e reagir (dodge/parry)
+        if (v) {
+          v.swingT = ev.dur;
+          if (v.actor && v.cfg) v.actor.trigger(v.cfg.attack, { speed: Math.min(2, 0.55 / Math.max(0.2, ev.dur)) });
+          for (const m of v.model.mats) m.emissive.setHex(0x995200); // flash de aviso (âmbar): golpe chegando
+          setTimeout(() => { for (const m of v.model.mats) m.emissive.setHex(0x000000); }, Math.round(ev.dur * 1000));
+          ringEffect(v.pos, 0xffaa33, 1.6); // anel de aviso no chão
+          if (ev.pid === myPid()) beep(180, 0.08, 'square', 0.03, -40); // "tell" audível suave
+        }
+        break;
+      }
       case 'eatk': {
-        if (v) v.swingT = 0.3;
-        if (v && v.actor && v.cfg) v.actor.trigger(v.cfg.attack, { speed: 1.4 });
-        // flecha visual dos atiradores — de quem atira até a vítima
+        // Fase 41: a anim de ataque + tell já tocaram no 'ewind'; aqui é só o impacto (o golpe LANDOU)
+        // flecha visual dos atiradores — de quem atira até a vítima (a flecha voa quando o tiro sai)
         if (v && v.def.ranged) {
           const victim = ev.pid === myPid() ? player.pos : remoteHeroes.get(ev.pid)?.model.group.position;
           if (victim) arrowStreak(
@@ -668,8 +710,9 @@ function processSimEvents() {
           );
         }
         if (ev.pid === myPid()) {
-          damagePlayer(ev.dmg, v);
-          if (!net.connected) combatLocal.notePlayerHit(0);
+          // Fase 33: online → o servidor já validou (ev.blk); offline → o cliente decide (verdict undefined)
+          if (net.connected) damagePlayer(ev.dmg, v, ev.blk ?? 'raw');
+          else { damagePlayer(ev.dmg, v); combatLocal.notePlayerHit(0); }
         }
         break;
       }
@@ -688,18 +731,46 @@ function processSimEvents() {
       }
       case 'eslam': {
         const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z), ev.z);
-        ringEffect(p, 0x9a8a6a, 7);
-        noiseBurst(0.35, 0.1);
-        if (player.pos.distanceTo(p) < 14) shake = 0.6;
+        // Fase 43: TELEGRAFIA do slam de ÁREA — anel de AVISO vermelho marcando a zona de perigo (SAIA dela!)
+        ringEffect(p, 0xff5a3c, 5.5);
+        ringEffect(p, 0xffaa33, 6.2);
+        beep(80, 0.6, 'sawtooth', 0.05, -30); // rugido grave: o troll rearma
+        if (v) for (const m of v.model.mats) { m.emissive.setHex(0x992200); setTimeout(() => m.emissive.setHex(0x000000), 900); }
         break;
       }
       case 'estun': {
         if (v) floatText(v.pos, '💫 atordoado', '#ffe9a8', 16);
         break;
       }
+      case 'ephase': { // Fase 44: chefe entrou numa nova FASE — FÚRIA (rugido + clarão + onda de choque)
+        if (v) {
+          floatText(v.pos.clone().add(new THREE.Vector3(0, 1.6, 0)), ev.phase >= 2 ? '☠️ FÚRIA MÁXIMA!' : '⚡ ENFURECIDO!', '#ff5a3c', 26);
+          ringEffect(v.pos, 0xff3a2a, 7); ringEffect(v.pos, 0xffaa33, 8); // onda de choque
+          impactBurst(v.pos.clone().add(new THREE.Vector3(0, 1.3, 0)), true);
+          for (const m of v.model.mats) { m.emissive.setHex(0x992200); setTimeout(() => m.emissive.setHex(0x000000), 700); }
+          if (player.pos.distanceTo(v.pos) < 16) juiceHit(0.8); // Fase 46: fúria do chefe soca a câmera (zoom+roll+shake)
+        }
+        beep(70, 0.7, 'sawtooth', 0.08, -50); // rugido grave
+        break;
+      }
       case 'ecombo': {
         if (v) floatText(v.pos, '⚔️ COMBO!', '#ffd24a', 22);
-        if (ev.pid === myPid()) beep(520, 0.12, 'square', 0.06, 200);
+        if (ev.pid === myPid()) { juiceHit(0.55); beep(520, 0.12, 'square', 0.06, 200); } // Fase 46: o finalizador/flourish agora tem peso de câmera
+        break;
+      }
+      case 'eact': { // Fase 36: um ALIADO atacou → anima o modelo remoto em tempo (swing/tiro/cast)
+        if (ev.pid === myPid()) break; // o próprio herói já anima localmente (swingT/heroActor)
+        const r = remoteHeroes.get(ev.pid);
+        if (r) {
+          r.swingT = ev.a === 'flourish' ? 0.5 : 0.3; // fallback procedural
+          if (r.actor) {
+            const clip = ev.a === 'bow' ? ['Shoot_OneHanded', 'Shoot']
+              : ev.a === 'spell' ? ['Spellcast', 'Punch']
+              : ['SwordSlash', 'Punch'];
+            r.actor.triggerUpper(clip, { speed: ev.a === 'flourish' ? 1.2 : 1.5 });
+          }
+          if (ev.a !== 'bow' && ev.a !== 'spell') bladeSwoosh(r.model.group.position, r.ry); // trilha de lâmina
+        }
         break;
       }
       case 'eexec': { // execução de inimigo atordoado (Fase 15) — finisher com peso
@@ -707,7 +778,7 @@ function processSimEvents() {
           floatText(v.pos.clone().add(new THREE.Vector3(0, 0.3, 0)), '⚔️ EXECUÇÃO!', '#ff5a3c', 26);
           impactBurst(v.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), true);
         }
-        if (ev.pid === myPid()) { hitStopT = Math.max(hitStopT, 0.12); shake = Math.max(shake, 0.3); beep(90, 0.25, 'sawtooth', 0.08, -60); }
+        if (ev.pid === myPid()) { juiceHit(1); beep(90, 0.25, 'sawtooth', 0.08, -60); } // Fase 46: execução = peso máximo (zoom+shake+hitstop)
         break;
       }
       case 'eheal': {
@@ -734,18 +805,21 @@ function processSimEvents() {
         // VFX de impacto (Fase 43): flash + faíscas + sangue na altura do peito do inimigo
         impactBurst(v.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), ev.crit);
         if (mine) {
+          telemetry.noteHit(ev.id, ev.src, ev.amount, ev.crit); // Fase 49: telemetria (dano por fonte + TTK)
           reticle.style.transform = ev.crit ? 'scale(2)' : 'scale(1.7)'; // hit-marker na mira (Fase 8)
           setTimeout(() => { reticle.style.transform = 'scale(1)'; }, 90);
-          // hit-stop só no meu golpe corpo-a-corpo (mais forte no crítico)
-          if (ev.src !== 'ranged' && ev.src !== 'magic') hitStopT = Math.max(hitStopT, ev.crit ? 0.08 : 0.05);
+          // hit-stop só no meu golpe corpo-a-corpo; o CRÍTICO ganha um punch leve de câmera (Fase 46),
+          // o golpe normal fica só no micro-hitstop (não zoomar todo swing — enjoa).
+          if (ev.src !== 'ranged' && ev.src !== 'magic') { if (ev.crit) juiceHit(0.35); else hitStopT = Math.max(hitStopT, 0.05); }
           player.lastCombat = time;
-          player.mult = Math.min(99, player.mult + 1);
-          player.multT = 5;
+          player.mult = Math.min(99, player.mult + 1); // Fase 19: só zera ao apanhar (sem decaimento por tempo)
           const el = $('mult');
           el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
           // você vira o que você usa: cada golpe treina a disciplina correspondente
           const dk = ev.src === 'ranged' ? 'skl' : ev.src === 'magic' ? 'wil' : 'str';
-          gainDiscXP(dk, Math.round(ev.amount * 0.6));
+          // Fase 19: recompensa de fluência — manter o multiplicador limpo enriquece o XP da disciplina (x25 → dobra)
+          const fluency = 1 + Math.min(player.mult, 25) * 0.04;
+          gainDiscXP(dk, Math.round(ev.amount * 0.6 * fluency));
         }
         break;
       }
@@ -766,15 +840,35 @@ function processSimEvents() {
         shockDust(p); // Empurrão (ar/força): anel + poeira
         break;
       }
+      case 'frost': {
+        const p = new THREE.Vector3(ev.x, terrainHeight(ev.x, ev.z) + 1, ev.z);
+        frostBurst(p); // escola GELO (Fase 25): estilhaços + luz ciano
+        beep(1300, 0.12, 'triangle', 0.04, 180);
+        break;
+      }
+      case 'estat': { // Fase 28: status aplicado — rótulo legível sobre o inimigo
+        if (v) {
+          const lbl = ev.kind === 'freeze' ? ['❄️ CONGELADO', '#bfeaff']
+            : ev.kind === 'shock' ? ['⚡ CHOCADO', '#dfe9ff']
+            : ['😱 MEDO', '#e8c8ff'];
+          floatText(v.pos.clone().add(new THREE.Vector3(0, 0.4, 0)), lbl[0], lbl[1], 15);
+        }
+        break;
+      }
       case 'eleap':
         if (v) floatText(v.pos, '🐺 SALTO!', '#ff8a5a', 16);
         break;
       case 'eland':
         if (v) { ringEffect(v.pos, 0x8a4a4a, 5); noiseBurst(0.2, 0.07); shake = 0.4; }
-        if (ev.pid === myPid() && ev.dmg > 0) damagePlayer(ev.dmg);
+        // Fase 33: leap-land também validado no servidor (dodge/parry negam o dano); online passa o veredito
+        if (ev.pid === myPid() && (net.connected ? true : ev.dmg > 0)) {
+          if (net.connected) damagePlayer(ev.dmg, v, ev.blk ?? 'raw');
+          else damagePlayer(ev.dmg, v);
+        }
         break;
       case 'edie':
         if (v) onEnemyDeath(v, ev.killerPid === myPid(), ev.killerPid);
+        if (ev.killerPid === myPid()) telemetry.noteKill(ev.id); // Fase 49: TTK + contagem de mortes minhas
         break;
     }
   }
@@ -818,6 +912,48 @@ let lockedTarget = null; // lock-on manual (Tab) — flourish target fixo (Fase 
 // ============================================================ fx / floating text / orbs
 const effects = [];
 let hitStopT = 0; // câmera-lenta breve no acerto (Fase 43)
+// Fase 46 — juice de câmera: punch de FOV (zoom-in breve) + roll (dutch kick) nos golpes fortes.
+let camPunch = 0;                 // redução de FOV em graus (decai a cada frame)
+let camRoll = 0;                  // inclinação lateral da câmera em rad (decai)
+const BASE_FOV = camera.fov;      // 58 (core.ts) — a câmera volta pra cá quando o punch zera
+// power ~0.35 (crít) .. 1 (execução / fúria de chefe): escala hitstop, shake, zoom e roll juntos.
+function juiceHit(power) {
+  hitStopT = Math.max(hitStopT, 0.05 + power * 0.09);
+  shake = Math.max(shake, 0.18 + power * 0.34);
+  camPunch = Math.max(camPunch, 2 + power * 4.5);            // zoom-in (mais fechado = mais soco)
+  const dir = camRoll >= 0 ? -1 : 1;                          // alterna o lado → sensação de "chacoalhar"
+  camRoll = dir * Math.max(Math.abs(camRoll), 0.005 + power * 0.016);
+}
+// ============================================================ Fase 49 — telemetria de combate
+// Métricas leves agregadas dos eventos do sim + gestos defensivos. Expostas em FABLE.telemetry
+// pra tunar data-driven (TTK, dano por fonte, uso de dodge/parry, mortes). Só conta o SEU combate.
+const telemetry = {
+  dmgOut: { melee: 0, ranged: 0, magic: 0 }, // dano infligido por disciplina
+  hits: { melee: 0, ranged: 0, magic: 0 }, crits: 0,
+  kills: 0, deaths: 0, dmgTaken: 0,
+  dodges: 0, perfectDodges: 0, parries: 0, blocks: 0,
+  ttk: [] as number[],                    // tempo pra matar cada inimigo (1º acerto → morte)
+  _firstHit: new Map<number, number>(),   // inimigo → t do primeiro dano recebido de mim
+  noteHit(id: number, src: 'melee' | 'ranged' | 'magic', amount: number, crit: boolean) {
+    this.dmgOut[src] += amount; this.hits[src]++; if (crit) this.crits++;
+    if (!this._firstHit.has(id)) this._firstHit.set(id, time);
+  },
+  noteKill(id: number) { this.kills++; const t0 = this._firstHit.get(id); if (t0 !== undefined) { this.ttk.push(+(time - t0).toFixed(2)); this._firstHit.delete(id); } },
+  reset() { this.dmgOut = { melee: 0, ranged: 0, magic: 0 }; this.hits = { melee: 0, ranged: 0, magic: 0 }; this.crits = 0; this.kills = 0; this.deaths = 0; this.dmgTaken = 0; this.dodges = 0; this.perfectDodges = 0; this.parries = 0; this.blocks = 0; this.ttk = []; this._firstHit.clear(); },
+  summary() {
+    const tot = this.dmgOut.melee + this.dmgOut.ranged + this.dmgOut.magic || 1;
+    const pct = (v: number) => +(v / tot * 100).toFixed(0);
+    const avg = this.ttk.length ? +(this.ttk.reduce((a, b) => a + b, 0) / this.ttk.length).toFixed(1) : 0;
+    return {
+      kills: this.kills, deaths: this.deaths, dmgTaken: Math.round(this.dmgTaken),
+      dmgShare: { melee: pct(this.dmgOut.melee), ranged: pct(this.dmgOut.ranged), magic: pct(this.dmgOut.magic) },
+      avgTTK: avg, ttkSamples: this.ttk.length,
+      defense: { dodges: this.dodges, perfectDodges: this.perfectDodges, parries: this.parries, blocks: this.blocks },
+      critRate: this.hits.melee + this.hits.ranged + this.hits.magic ? +(this.crits / (this.hits.melee + this.hits.ranged + this.hits.magic) * 100).toFixed(0) : 0,
+    };
+  },
+};
+
 let _frameMs = 0; // média móvel do tempo de frame — orçamento monitorado (Fase 47)
 function addEffect(mesh, dur, update) {
   scene.add(mesh);
@@ -970,6 +1106,18 @@ function shockDust(pos) {
   ringEffect(pos, 0xbfe0ff, 9);
   for (let i = 0; i < 9; i++) { const a = Math.random() * 6.28, s = 2.5 + Math.random() * 4.5; _particle(pos, i % 2 ? 0xcdd6de : 0xa8b2ba, 0.11 + Math.random() * 0.08, Math.cos(a) * s, 1 + Math.random() * 2.5, Math.sin(a) * s, 8, 0.4 + Math.random() * 0.25); }
 }
+// GELO (Estilhaço, Fase 25): clarão frio que expande + estilhaços cristalinos voando + luz ciano
+function frostBurst(pos) {
+  const core = new THREE.Mesh(_burstGeo, new THREE.MeshBasicMaterial({ color: 0xdff6ff, transparent: true, opacity: 0.9, depthWrite: false }));
+  core.position.copy(pos); core.scale.setScalar(0.4);
+  addEffect(core, 0.34, (fx, k) => {
+    fx.mesh.scale.setScalar(0.4 + k * 2.6);
+    fx.mesh.material.color.setHex(k < 0.4 ? 0xdff6ff : (k < 0.75 ? 0x9fe8ff : 0x5fb8e8));
+    fx.mesh.material.opacity = 0.9 * (1 - k);
+  });
+  for (let i = 0; i < 10; i++) { const a = Math.random() * 6.28, s = 1.5 + Math.random() * 3; _particle(pos, i % 2 ? 0xcdf2ff : 0x8fd8ff, 0.08 + Math.random() * 0.07, Math.cos(a) * s, 1.5 + Math.random() * 3, Math.sin(a) * s, 4, 0.35 + Math.random() * 0.3); }
+  flashLight(pos, 0x9fe8ff, 5, 13, 0.3);
+}
 
 // experience orbs & coins (very Fable)
 const orbs = [];
@@ -1020,6 +1168,13 @@ function updateOrbs(dt) {
 }
 
 const projectiles = [];
+// bolha do Escudo Arcano (Fase 25) — esfera translúcida azul ao redor do herói enquanto o escudo dura
+const shieldBubble = new THREE.Mesh(
+  new THREE.SphereGeometry(1.15, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0x7fb8ff, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide })
+);
+shieldBubble.visible = false;
+scene.add(shieldBubble);
 
 // ============================================================ combat
 let time = 0;
@@ -1118,43 +1273,75 @@ function requestStun(enemyId) {
   else localSim.stun(enemyId, 1.5);
 }
 
-function damagePlayer(dmg, attacker = null) {
+// Fase 33: `verdict` = decisão do SERVIDOR (online): 'dodge'/'parry'/'block' (já validados) ou 'raw' (golpe
+// normal, sem re-checar). `undefined` = OFFLINE → o próprio cliente decide dodge/block/parry (localSim).
+function damagePlayer(dmg, attacker = null, verdict = undefined) {
   if (player.dead) return;
-  if (player.invulnT > 0) {
-    // esquiva PERFEITA (Fase 18): dodge no último instante (i-frames ainda altos) → recompensa
+  // esquiva confirmada (server online, ou i-frames locais offline)
+  if (verdict === 'dodge' || (verdict === undefined && player.invulnT > 0)) {
+    // esquiva PERFEITA (Fase 18): dodge no último instante (i-frames locais ainda altos) → recompensa
     if (player.invulnT > 0.28 && attacker) {
       floatText(player.pos, '✦ PERFEITA!', '#9ad0ff', 22);
-      hitStopT = Math.max(hitStopT, 0.14);                         // slow-mo = janela de contra-ataque
+      hitStopT = Math.max(hitStopT, 0.14); juiceHit(0.5);         // slow-mo = janela de contra-ataque + punch de câmera (Fase 46)
       player.stam = Math.min(player.maxStam, player.stam + 22);    // devolve fôlego (recompensa a esquiva justa)
       beep(1500, 0.16, 'sine', 0.06, 300);
+      telemetry.perfectDodges++; // Fase 49
     } else {
       floatText(player.pos, 'esquivou!', '#e8d05a', 15);
     }
+    telemetry.dodges++; // Fase 49: toda esquiva bem-sucedida
     return;
   }
-  // bloqueio (Q segurado): reduz 60%; na janela de 0.3s vira PARRY e atordoa
-  if (player.blocking && player.stam >= 8) {
+  if (verdict === 'parry') { // PARRY confirmado pelo servidor (já atordoou o atacante) — feedback forte (Fase 17)
+    player.stam = Math.max(0, player.stam - 4);
+    floatText(player.pos, '⚔️ APARADO!', '#ffe9a8', 22);
+    beep(1250, 0.14, 'square', 0.06, -250);
+    juiceHit(0.6); // Fase 46: parry = destaque do herói → zoom+shake+roll de câmera
+    ringEffect(player.pos, 0xffe9a8, 2.2);
+    if (attacker && attacker.pos) impactBurst(attacker.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), true);
+    telemetry.parries++; // Fase 49
+    return;
+  }
+  if (verdict === undefined && player.blocking && player.stam >= 8) { // OFFLINE: cliente decide block/parry
     if (attacker && time - player.blockStartT < 0.3) {
-      // PARRY PERFEITO (Fase 17): atordoa o atacante (→ fica executável, Fase 15) com feedback forte
       player.stam -= 4;
       floatText(player.pos, '⚔️ APARADO!', '#ffe9a8', 22);
       beep(1250, 0.14, 'square', 0.06, -250);
-      hitStopT = Math.max(hitStopT, 0.1);        // slow-mo do parry perfeito
-      shake = Math.max(shake, 0.22);
-      ringEffect(player.pos, 0xffe9a8, 2.2);     // clarão dourado
-      if (attacker.pos) impactBurst(attacker.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), true); // faíscas no atacante
+      juiceHit(0.6); // Fase 46: parry (offline) = destaque do herói → zoom+shake+roll
+      ringEffect(player.pos, 0xffe9a8, 2.2);
+      if (attacker.pos) impactBurst(attacker.pos.clone().add(new THREE.Vector3(0, 1.2, 0)), true);
       requestStun(attacker.id);
+      telemetry.parries++; // Fase 49
       return;
     }
     player.stam -= 8;
     dmg = Math.round(dmg * 0.4);
     floatText(player.pos, 'bloqueado', '#c8c8c8', 12);
     beep(420, 0.07, 'square', 0.04);
+    telemetry.blocks++; // Fase 49
+  } else if (verdict === 'block') { // ONLINE: o servidor já reduziu o dano; só o feedback aqui
+    player.stam = Math.max(0, player.stam - 8);
+    floatText(player.pos, 'bloqueado', '#c8c8c8', 12);
+    beep(420, 0.07, 'square', 0.04);
+    telemetry.blocks++; // Fase 49
   }
   dmg = Math.max(1, Math.round(dmg * (1 - damageReduction())));
+  if (player.shieldT > 0) { // Escudo Arcano (Fase 25): absorve parte do dano (50/65/80% por nível)
+    const absorb = [0, 0.5, 0.65, 0.8][player.shieldLvl] ?? 0.5;
+    dmg = Math.max(1, Math.round(dmg * (1 - absorb)));
+    ringEffect(player.pos, 0x7fb8ff, 2);
+    beep(600, 0.06, 'sine', 0.04, 120);
+  }
   player.hp -= dmg;
+  telemetry.dmgTaken += dmg; // Fase 49
   player.mult = 0;
   player.lastCombat = time;
+  // Fase 34: knockback previsto — o golpe que LANDOU te empurra pra longe do atacante (instantâneo, local)
+  if (attacker && attacker.pos) {
+    const dx = player.pos.x - attacker.pos.x, dz = player.pos.z - attacker.pos.z, d = Math.hypot(dx, dz) || 1;
+    const kf = Math.min(7, 2.5 + dmg * 0.09); // escala leve com o dano
+    player.knockX = (dx / d) * kf; player.knockZ = (dz / d) * kf;
+  }
   floatText(player.pos, '-' + dmg, '#ff5a5a', 16);
   shake = Math.min(0.5, shake + dmg * 0.01);
   beep(200, 0.06, 'square', 0.04);
@@ -1169,9 +1356,11 @@ function tryRoll() {
   player.stam -= cost;
   player.rollT = 0.35;
   player.invulnT = 0.45;
-  // direção do dodge: WASD atual relativo à câmera; sem input → backstep (pra trás da mira)
-  const fw = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
-  const st = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+  sendMsg({ t: 'dodge', dur: 0.45 }); // Fase 32: avisa o servidor da janela de i-frames (validação: Fase 33)
+  // direção do dodge: input atual (teclas remapeáveis + stick) relativo à câmera; sem input → backstep (Fase 7/48)
+  const bd = settings.binds;
+  const fw = clamp((keys[bd.forward] || keys.ArrowUp ? 1 : 0) - (keys[bd.back] || keys.ArrowDown ? 1 : 0) + pad.moveY, -1, 1);
+  const st = clamp((keys[bd.right] || keys.ArrowRight ? 1 : 0) - (keys[bd.left] || keys.ArrowLeft ? 1 : 0) + pad.moveX, -1, 1);
   const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw), rx = -fz, rz = fx;
   let dx = fx * fw + rx * st, dz = fz * fw + rz * st;
   const dl = Math.hypot(dx, dz);
@@ -1216,14 +1405,17 @@ function changeMorality(amt) {
 // dano/alcance/cooldown são decididos pelo CombatSim (servidor online, local solo);
 // aqui ficam só a pré-validação de UI e os efeitos imediatos do próprio herói
 const combatLocal = new CombatSim(localSim);
-function castAbility(key, tgt, flourish = false) {
+function castAbility(key, tgt, flourish = false, charge = 0, level = 1, eqOverride = null) {
   const dir = heroModel.group.rotation.y; // facing p/ o golpe melee direcional (Fase 11)
+  const stats = combatStats(eqOverride ?? equippedStats()); // Fase 27: arma do slot deste ataque (LMB melee / RMB arco)
   if (net.connected) {
-    sendMsg({ t: 'cast', key, targetId: tgt ? tgt.id : undefined, dir, flourish });
+    // Fase 27: envia a arma DESTE ataque pro servidor resolver o tipo certo (senão usa a equipada)
+    const wpn = eqOverride ? { k: stats.wpnKind, d: stats.wpnDmg, r: stats.wpnRange, kn: stats.wpnKnock } : undefined;
+    sendMsg({ t: 'cast', key, targetId: tgt ? tgt.id : undefined, dir, flourish, charge, level, wpn });
   } else {
     combatLocal.cast(
-      { id: 0, x: player.pos.x, z: player.pos.z, ...combatStats() },
-      key, tgt ? tgt.id : undefined, dir, flourish,
+      { id: 0, x: player.pos.x, z: player.pos.z, ...stats },
+      key, tgt ? tgt.id : undefined, dir, flourish, charge, level,
     );
   }
 }
@@ -1248,26 +1440,28 @@ const abilities = [
       castAbility('golpe', t);
     } },
   { ...ABILITIES.bola, name: 'Bola de Fogo',
-    use(t) {
-      // projétil é só visual — o dano chega via evento 'boom'/'edmg' da simulação
-      const m = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 10), new THREE.MeshBasicMaterial({ color: 0xff8a2a }));
-      m.position.copy(player.pos).add(new THREE.Vector3(0, 1.8, 0));
+    use(_t, level = 1) {
+      // Fase 24: bola voa RETO na direção da mira (não persegue alvo) e explode (AoE) via evento 'boom'
+      const dir = heroModel.group.rotation.y;
+      const r = 0.28 * (1 + (level - 1) * 0.35); // nível engrossa a bola
+      const m = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 10), new THREE.MeshBasicMaterial({ color: 0xff8a2a }));
+      m.position.copy(player.pos).add(new THREE.Vector3(0, 1.6, 0));
       scene.add(m);
-      projectiles.push({ mesh: m, target: t, speed: FIREBALL_SPEED, fire: true });
-      beep(520, 0.18, 'sawtooth', 0.05, -260);
-      castAbility('bola', t);
+      projectiles.push({ mesh: m, straight: true, vx: Math.sin(dir) * FIREBALL_SPEED, vz: Math.cos(dir) * FIREBALL_SPEED, dist: 0, maxDist: ABILITIES.bola.range, fire: true });
+      beep(520 - level * 40, 0.18, 'sawtooth', 0.05, -260);
+      castAbility('bola', null, false, 0, level); // dir-based; o sim lança o projétil AoE
     } },
   { ...ABILITIES.relampago, name: 'Relâmpago',
-    use(t) {
+    use(_t, level = 1) {
       beep(1400, 0.2, 'sawtooth', 0.05, -900);
       noiseBurst(0.15, 0.05);
-      castAbility('relampago', t); // raios desenhados pelos eventos 'bolt'
+      castAbility('relampago', null, false, 0, level); // Fase 24: mira pela dir; raios desenhados pelos eventos 'bolt'
     } },
   { ...ABILITIES.empurrao, name: 'Empurrão',
-    use() {
+    use(_t, level = 1) {
       beep(90, 0.35, 'sawtooth', 0.08, -40);
-      shake = 0.25;
-      castAbility('empurrao', null); // anel desenhado pelo evento 'shock'
+      shake = 0.25 + (level - 1) * 0.1;
+      castAbility('empurrao', null, false, 0, level); // anel desenhado pelo evento 'shock'
     } },
   { ...ABILITIES.tempolento, name: 'Tempo Lento',
     use() {
@@ -1277,15 +1471,35 @@ const abilities = [
       floatText(player.pos, '⏳ O tempo desacelera…', '#9ad0ff', 16);
     } },
   { ...ABILITIES.cura, name: 'Cura', // cura é 100% local (só afeta o próprio herói)
-    use() {
-      const amt = Math.round(30 + player.level * 7);
+    use(_t, level = 1) {
+      const amt = Math.round((30 + player.level * 7) * (1 + (level - 1) * 0.5)); // nível cura mais (Fase 23)
       player.hp = Math.min(player.maxHp, player.hp + amt);
       floatText(player.pos, '+' + amt, '#6fdc6f', 19);
       ringEffect(player.pos, 0x6fdc6f, 3);
       beep(700, 0.25, 'sine', 0.06, 200);
     } },
+  { ...ABILITIES.gelo, name: 'Estilhaço de Gelo', // escola GELO (Fase 25) — projétil direcional que congela
+    use(_t, level = 1) {
+      const dir = heroModel.group.rotation.y;
+      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.22 * (1 + (level - 1) * 0.3)), new THREE.MeshBasicMaterial({ color: 0x9fe8ff }));
+      m.position.copy(player.pos).add(new THREE.Vector3(0, 1.6, 0));
+      scene.add(m);
+      projectiles.push({ mesh: m, straight: true, vx: Math.sin(dir) * FIREBALL_SPEED, vz: Math.cos(dir) * FIREBALL_SPEED, dist: 0, maxDist: ABILITIES.gelo.range, spin: true });
+      flashLight(m.position, 0x9fe8ff, 3, 12, 0.3);
+      beep(1100, 0.14, 'triangle', 0.05, 260);
+      castAbility('gelo', null, false, 0, level); // dir-based; o sim lança o projétil que congela
+    } },
+  { ...ABILITIES.escudo, name: 'Escudo Arcano', // escola ESCUDO (Fase 25) — buff defensivo LOCAL (como a cura)
+    use(_t, level = 1) {
+      player.shieldT = 5 + (level - 1) * 2;   // dura mais por nível
+      player.shieldLvl = level;               // nível define quanto absorve
+      ringEffect(player.pos, 0x7fb8ff, 3.2);
+      flashLight(player.pos, 0x7fb8ff, 5, 14, 0.5);
+      floatText(player.pos, '🛡️ Escudo!', '#9fc4ff', 17);
+      beep(300, 0.4, 'sine', 0.06, 260);
+    } },
 ];
-const cooldowns = [0, 0, 0, 0, 0, 0];
+const cooldowns = [0, 0, 0, 0, 0, 0, 0, 0];
 let gcd = 0;
 const slotEls = [...document.querySelectorAll('.slot.ab')];
 
@@ -1293,12 +1507,15 @@ function errorMsg(text) {
   floatText(player.pos, text, '#ff6a6a', 14);
   beep(140, 0.1, 'square', 0.04);
 }
-function tryAbility(i) {
+const DIRECTIONAL_SPELLS = new Set(['bola', 'relampago', 'gelo']); // Fase 24/25: miram pela câmera, não por alvo travado
+function tryAbility(i, level = 1) {
   if (player.dead || !started) return;
   const ab = abilities[i];
   if (gcd > 0 || cooldowns[i] > 0) return;
-  if (player.will < ab.cost) { errorMsg('Vontade insuficiente'); return; }
-  if (ab.needTarget) {
+  const lvl = Math.min(3, Math.max(1, Math.round(level)));
+  const cost = Math.round(ab.cost * (1 + (lvl - 1) * 0.6)); // Fase 23: carregar cobra mais Vontade por nível
+  if (player.will < cost) { errorMsg('Vontade insuficiente'); return; }
+  if (ab.needTarget && !DIRECTIONAL_SPELLS.has(ab.key)) {
     if (!target || target.state === 'dead' || target.state === 'surrender') {
       // Golpe sem alvo inimigo: talvez você esteja atacando um aldeão (crime)
       if (i === 0 && strikeNearbyVillager()) { cooldowns[0] = ab.cd; gcd = 1.0; return; }
@@ -1309,13 +1526,13 @@ function tryAbility(i) {
     if (d > range) { errorMsg('Fora de alcance'); return; }
     heroModel.group.rotation.y = Math.atan2(target.pos.x - player.pos.x, target.pos.z - player.pos.z);
   }
-  player.will -= ab.cost;
+  player.will -= cost;
   player.lastCombat = time;
   cooldowns[i] = ab.cd;
   gcd = 1.0;
-  ab.use(target);
-  slotEls[i].classList.add('flash');
-  setTimeout(() => slotEls[i].classList.remove('flash'), 180);
+  ab.use(target, lvl);
+  slotEls[i]?.classList.add('flash'); // Gelo/Escudo (Fase 25) não têm slot na hotbar aposentada
+  setTimeout(() => slotEls[i]?.classList.remove('flash'), 180);
 }
 slotEls.forEach((el) => el.addEventListener('click', () => tryAbility(+el.dataset.i)));
 // Fase 9: hotbar de habilidades aposentada (LMB/RMB/E cobrem os ataques) → esconde os slots antigos
@@ -1342,17 +1559,17 @@ function frontalTarget(reach) {
 // LMB: golpe na direção que olho, sem Tab-alvo. Usa o soft-lock (Fase 4) se estiver no alcance,
 // senão pega o alvo frontal; dispara pelo pipeline existente (tryAbility: GCD, cooldown, cast,
 // combo no servidor) com um lunge leve pro alvo. Sem alvo → golpe no ar.
-const LUNGE_T = 0.13, MELEE_CD = 0.36, FLOURISH_TIME = 0.5; // ritmo/carga do melee (Fase 12/13)
+const LUNGE_T = 0.13, MELEE_CD = 0.42, FLOURISH_TIME = 0.5; // ritmo/carga do melee (Fase 12/13; Fase 49: 0.36→0.42 p/ o melee não dominar)
 let meleeReadyT = 0, chargeStartT = -1; // chargeStartT>=0 = segurando LMB pra carregar o flourish
 function meleeAttack(flourish = false) {
   if (player.dead || !started || time < meleeReadyT) return;
-  const bow = equippedStats().kind === 'bow';
-  if (bow) flourish = false; // flourish é só melee
-  const reach = equippedStats().range * (flourish ? 1.2 : 1);
+  // Fase 27: LMB é SEMPRE melee, com a melhor arma corpo-a-corpo que você possui (mesmo com arco equipado)
+  const mw = meleeWeaponItem();
+  const mstats = weaponStatsOf(mw.wpn, mw.rar);
+  const reach = mstats.range * (flourish ? 1.2 : 1);
   const inReach = (e) => e && e.state !== 'dead' && e.state !== 'surrender'
     && Math.hypot(e.pos.x - player.pos.x, e.pos.z - player.pos.z) <= reach;
   const t = inReach(target) ? target : frontalTarget(reach);
-  if (bow && !t) return; // arco precisa de alvo; o melee varre o arco frontal (Fase 11) — não precisa
   if (t) {
     // lunge pro alvo (mais forte no flourish) — fecha o vão até a borda, nunca atravessa
     const dx = t.pos.x - player.pos.x, dz = t.pos.z - player.pos.z, d = Math.hypot(dx, dz) || 1;
@@ -1362,23 +1579,46 @@ function meleeAttack(flourish = false) {
   }
   if (flourish) { // Fase 13: golpe carregado — forte, derruba/atordoa (dano/stun no servidor)
     player.swingT = 0.5; beep(120, 0.2, 'sawtooth', 0.06, -90); shake = 0.22;
-    castAbility('golpe', t || null, true);
   } else {
-    abilities[0].use(t || null); // swing + cast; o arco frontal (Fase 11) pega quem está à frente
+    player.swingT = 0.35; beep(160, 0.08, 'square', 0.06);
   }
+  castAbility('golpe', t || null, flourish, 0, 1, mstats); // o arco frontal (Fase 11) pega quem está à frente
   player.lastCombat = time;
-  meleeReadyT = time + (flourish ? 0.5 : MELEE_CD * (equippedStats().def.swing ?? 1)); // ritmo por arma (Fase 16)
+  meleeReadyT = time + (flourish ? 0.5 : MELEE_CD * (mstats.def.swing ?? 1)); // ritmo por arma (Fase 16)
 }
-// RMB: ataque à distância (arco). Atira no alvo do soft-lock/frontal na direção da mira.
-// Só com arco equipado (multi-arma melee+arco simultâneos: Bloco C). Tensionar/carga: Fase 21.
-function rangedAttack() {
-  if (player.dead || !started) return;
-  if (equippedStats().kind !== 'bow') return; // sem arco, RMB é no-op por ora
-  const t = (target && target.state !== 'dead' && target.state !== 'surrender')
-    ? target : frontalTarget(equippedStats().range);
-  if (!t) { errorMsg('Sem alvo à frente'); return; }
-  setTarget(t);
-  tryAbility(0); // golpe com arco = dispara a flecha pelo pipeline existente
+// RMB: ataque à distância (arco). Fase 21: SEGURA pra tensionar (carga 0..1) e SOLTA pra atirar.
+// Fase 22: MIRA LIVRE — a flecha vira um PROJÉTIL balístico que voa reto na direção da mira e acerta
+// por COLISÃO no sim (não trava alvo). Se você mira mal ou o inimigo se mexe, erra. Carga escala
+// dano/alcance/velocidade (autoritativo no CombatSim). Desacoplado do GCD (como o melee na Fase 12).
+let rangedReadyT = 0;
+let bowDrawT = -1;            // >=0 = segurando RMB tensionando o arco (Fase 21)
+const BOW_FULL_DRAW = 0.7;   // segundos de tensão até a carga máxima
+let spellChargeT = -1;       // >=0 = segurando E carregando a magia (Fase 23)
+const SPELL_L2 = 0.35, SPELL_L3 = 0.8; // segundos de carga p/ nível 2 / nível 3
+const spellLevel = (held) => (held >= SPELL_L3 ? 3 : held >= SPELL_L2 ? 2 : 1);
+const netCharge = (kind, on) => sendMsg({ t: 'charge', kind, on }); // Fase 32: timing de carga p/ o servidor
+function rangedAttack(charge = 0) {
+  if (player.dead || !started || time < rangedReadyT) return;
+  // Fase 27: RMB usa o melhor arco que você POSSUI (não precisa estar equipado); sem arco → no-op
+  const bw = bowWeaponItem();
+  if (!bw) { errorMsg('Você não tem um arco'); return; }
+  const bstats = weaponStatsOf(bw.wpn, bw.rar);
+  const chg = Math.min(1, Math.max(0, charge));
+  const dir = heroModel.group.rotation.y; // mira = pra onde a câmera/herói olham (Fase 2)
+  const speed = ARROW_SPEED * (1 + chg * 0.7);
+  const reach = bstats.range * (1 + chg * 0.35);
+  // flecha visual balística: voa RETO na direção da mira (não persegue alvo) — o dano vem do sim (edmg)
+  const arrow = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 0.55, 4),
+    new THREE.MeshBasicMaterial({ color: 0xd8c8a0 })
+  );
+  arrow.position.copy(player.pos).add(new THREE.Vector3(0, 1.6, 0));
+  scene.add(arrow);
+  projectiles.push({ mesh: arrow, straight: true, vx: Math.sin(dir) * speed, vz: Math.cos(dir) * speed, dist: 0, maxDist: reach * 2.4, orient: true });
+  beep(760 + chg * 320, 0.08, 'triangle', 0.05, -300);
+  castAbility('golpe', null, false, chg, 1, bstats); // Fase 27: arma = o arco (mesmo com melee equipada)
+  player.lastCombat = time;
+  rangedReadyT = time + 0.28; // trava anti-spam (o tensionar já cadencia de verdade)
 }
 
 function usePotion(kind) {
@@ -1884,6 +2124,49 @@ function toggleTalents() {
   else { renderTalents(); p.style.display = 'block'; }
 }
 
+// ============================================================ Fase 48 — painel de Opções (input & acessibilidade)
+const KEY_LABELS = { ShiftLeft: 'Shift Esq', ShiftRight: 'Shift Dir', ControlLeft: 'Ctrl Esq', ControlRight: 'Ctrl Dir', Space: 'Espaço', Tab: 'Tab', Escape: 'Esc', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
+const keyLabel = (code) => !code ? '—' : code.startsWith('Key') ? code.slice(3) : code.startsWith('Digit') ? code.slice(5) : (KEY_LABELS[code] || code);
+function renderSettings() {
+  const body = $('setBody');
+  body.innerHTML = '';
+  const row = (html) => { const d = document.createElement('div'); d.className = 'row'; d.innerHTML = html; body.appendChild(d); return d; };
+  row(`<span>Sensibilidade do mouse</span><span><input id="setSens" type="range" min="0.2" max="3" step="0.05" value="${settings.lookSens}"> <b id="setSensV">${settings.lookSens.toFixed(2)}×</b></span>`);
+  row(`<span>Inverter Y (mouse e stick)</span><input id="setInv" type="checkbox" ${settings.invertY ? 'checked' : ''}>`);
+  row(`<span>Lock-on: segurar (em vez de alternar)</span><input id="setLockHold" type="checkbox" ${settings.lockOnHold ? 'checked' : ''}>`);
+  row(`<span>🎮 Gamepad</span><input id="setGp" type="checkbox" ${settings.gamepad ? 'checked' : ''}>`);
+  row(`<span>Sensibilidade do stick</span><span><input id="setPadSens" type="range" min="0.3" max="3" step="0.05" value="${settings.padLookSens}"> <b id="setPadSensV">${settings.padLookSens.toFixed(2)}×</b></span>`);
+  row(`<span>Zona morta do stick</span><span><input id="setDz" type="range" min="0.05" max="0.5" step="0.01" value="${settings.deadzone}"> <b id="setDzV">${settings.deadzone.toFixed(2)}</b></span>`);
+  $('setSens').oninput = (e) => { settings.lookSens = +e.target.value; $('setSensV').textContent = settings.lookSens.toFixed(2) + '×'; saveSettings(); };
+  $('setInv').onchange = (e) => { settings.invertY = e.target.checked; saveSettings(); };
+  $('setLockHold').onchange = (e) => { settings.lockOnHold = e.target.checked; lockedTarget = null; saveSettings(); };
+  $('setGp').onchange = (e) => { settings.gamepad = e.target.checked; saveSettings(); };
+  $('setPadSens').oninput = (e) => { settings.padLookSens = +e.target.value; $('setPadSensV').textContent = settings.padLookSens.toFixed(2) + '×'; saveSettings(); };
+  $('setDz').oninput = (e) => { settings.deadzone = +e.target.value; $('setDzV').textContent = settings.deadzone.toFixed(2); saveSettings(); };
+  const h = document.createElement('div'); h.className = 'ctitle'; h.style.marginTop = '10px'; h.textContent = 'Teclas — clique e aperte a nova tecla'; body.appendChild(h);
+  for (const act in BIND_LABEL) {
+    const r = row(`<span>${BIND_LABEL[act]}</span>`);
+    const b = document.createElement('button');
+    b.textContent = rebindingAction === act ? '… aperte' : keyLabel(settings.binds[act]);
+    b.onclick = () => { rebindingAction = act; renderSettings(); };
+    r.appendChild(b);
+  }
+  const reset = document.createElement('button');
+  reset.textContent = '↺ Restaurar padrões'; reset.style.marginTop = '10px';
+  reset.onclick = () => { rebindingAction = null; Object.assign(settings, { lookSens: 1, invertY: false, lockOnHold: false, gamepad: true, padLookSens: 1, deadzone: 0.22, binds: { ...DEFAULT_BINDS } }); lockedTarget = null; saveSettings(); renderSettings(); };
+  body.appendChild(reset);
+  const tip = document.createElement('div'); tip.className = 'tdesc'; tip.style.marginTop = '8px';
+  tip.innerHTML = pad.connected
+    ? '🎮 controle ativo — RT golpe · LT arco · X magia · Y roda · A esquiva · B bloquear · LB lock-on · RB interagir · ↑↓ poções'
+    : 'Conecte um controle e aperte qualquer botão pra ativar (plug-and-play).';
+  body.appendChild(tip);
+}
+function toggleSettings() {
+  const p = $('setPanel');
+  if (p.style.display === 'block') p.style.display = 'none';
+  else { renderSettings(); p.style.display = 'block'; }
+}
+
 // ============================================================ character panel
 function updateCharPanel() {
   $('cTitle').textContent = playerTitle() + (player.morality <= -40 ? ' Temível' : player.morality >= 40 ? ' Bondoso' : '');
@@ -1899,9 +2182,9 @@ function updateCharPanel() {
   $('dStrLvl').textContent = player.disc.str.lvl;
   $('dSklLvl').textContent = player.disc.skl.lvl;
   $('dWilLvl').textContent = player.disc.wil.lvl;
-  $('dStrFill').style.transform = `scaleX(${player.disc.str.xp / discXpToNext(player.disc.str.lvl)})`;
-  $('dSklFill').style.transform = `scaleX(${player.disc.skl.xp / discXpToNext(player.disc.skl.lvl)})`;
-  $('dWilFill').style.transform = `scaleX(${player.disc.wil.xp / discXpToNext(player.disc.wil.lvl)})`;
+  $('dStrFill').style.transform = `scaleX(${player.disc.str.xp / discXpToNext('str', player.disc.str.lvl)})`;
+  $('dSklFill').style.transform = `scaleX(${player.disc.skl.xp / discXpToNext('skl', player.disc.skl.lvl)})`;
+  $('dWilFill').style.transform = `scaleX(${player.disc.wil.xp / discXpToNext('wil', player.disc.wil.lvl)})`;
   $('moralMarker').style.left = `${50 + player.morality / 2}%`;
 }
 function toggleCharPanel() {
@@ -2434,47 +2717,166 @@ const keys = {};
 let camYaw = 0.6, camPitch = 0.36, camDist = 11;
 const camFollow = new THREE.Vector3(); let camFollowInit = false; // follow suavizado (Fase 8)
 
+// Fase 34: prediction + reconciliação LEVE do herói (client-authoritative → o feel já é instantâneo;
+// isto reconcilia correções sem borrachudo). heroRenderPos rende suave; player.pos segue a predição.
+const heroRenderPos = new THREE.Vector3(); let heroRenderInit = false;
+let reconcileT = 0;
+const RECONCILE_HARD = 8; // divergência gritante do servidor (impossível por lag) → server-wins nudge
+function reconcileHero(dt) {
+  // (1) reconciliação LÓGICA com o servidor: só em desync GRITANTE (o resto confia na predição client-auth,
+  // já que o movimento é client-authoritative). Puxa suave pra posição autoritativa (server vence).
+  if (net.connected && net.selfAuth) {
+    const dx = net.selfAuth.x - player.pos.x, dz = net.selfAuth.z - player.pos.z;
+    if (Math.hypot(dx, dz) > RECONCILE_HARD) {
+      const k = Math.min(1, dt * 6);
+      player.pos.x += dx * k; player.pos.z += dz * k;
+    }
+  }
+  // (2) suavização de RENDER: salto/correção grande de posição → blend ~250ms (sem borrachudo);
+  // movimento normal (passo minúsculo por frame) → sem lag (render = predição).
+  if (!heroRenderInit) { heroRenderPos.copy(player.pos); heroRenderInit = true; }
+  if (heroRenderPos.distanceTo(player.pos) > 3) reconcileT = 0.25; // teleporte/respawn/travel/correção
+  if (reconcileT > 0) { reconcileT -= dt; heroRenderPos.lerp(player.pos, 1 - Math.exp(-dt * 14)); }
+  else heroRenderPos.copy(player.pos);
+  heroRenderPos.y = player.pos.y;
+}
+
+// ============================================================ Fase 48 — input: gamepad, remap, sensibilidade & acessibilidade
+// Bindings remapeáveis das AÇÕES de combate/movimento (as teclas de painel C/I/T/M ficam fixas, fora do escopo).
+const DEFAULT_BINDS = {
+  forward: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD',
+  dodge: 'ShiftLeft', block: 'KeyQ', magic: 'KeyE', wheel: 'KeyR',
+  lockon: 'Tab', interact: 'KeyF', potionHp: 'Digit1', potionWill: 'Digit2',
+};
+const BIND_LABEL = {
+  forward: 'Andar à frente', back: 'Andar pra trás', left: 'Strafe esquerda', right: 'Strafe direita',
+  dodge: 'Esquiva', block: 'Bloquear / parry', magic: 'Lançar magia', wheel: 'Roda de feitiços',
+  lockon: 'Lock-on', interact: 'Interagir', potionHp: 'Poção de vida', potionWill: 'Poção de vontade',
+};
+const settings = { lookSens: 1, invertY: false, lockOnHold: false, gamepad: true, padLookSens: 1, deadzone: 0.22, binds: { ...DEFAULT_BINDS } };
+const SETTINGS_KEY = 'fable_settings';
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+    if (s && typeof s === 'object') { const b = s.binds; delete s.binds; Object.assign(settings, s); settings.binds = { ...DEFAULT_BINDS, ...(b || {}) }; }
+  } catch (e) { /* corrompido → defaults */ }
+}
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* cheio/bloqueado */ } }
+loadSettings();
+
+// lock-on compartilhado por Tab, gamepad e (futuro) toque — Fase 9/48
+function toggleLockOn() {
+  if (lockedTarget) { lockedTarget = null; toast('🔓 Lock-on solto'); beep(440, 0.05, 'sine', 0.03); }
+  else if (target) { lockedTarget = target; toast('🔒 Lock-on'); beep(880, 0.05, 'sine', 0.03); }
+}
+let rebindingAction = null; // ação aguardando captura da próxima tecla (painel de opções)
+
+// ---------- Gamepad (Fase 48): sticks + botões nas MESMAS funções do teclado/mouse ----------
+const pad = { moveX: 0, moveY: 0, connected: false };
+let padPrev = []; // estado anterior dos botões — detecção de borda (press/release)
+addEventListener('gamepadconnected', () => { toast('🎮 Controle conectado'); });
+addEventListener('gamepaddisconnected', () => { pad.connected = false; pad.moveX = pad.moveY = 0; padPrev = []; });
+const padDeadzone = (v) => (Math.abs(v) < settings.deadzone ? 0 : (v - Math.sign(v) * settings.deadzone) / (1 - settings.deadzone));
+const padPressed = (gp, i) => !!(gp.buttons[i] && gp.buttons[i].pressed);
+const PAD = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, DU: 12, DD: 13, DL: 14, DR: 15 };
+function pollGamepad(dt) {
+  pad.moveX = 0; pad.moveY = 0;
+  if (!settings.gamepad || !started || chatOpen) return;
+  const gp = (navigator.getGamepads && navigator.getGamepads()[0]) || null;
+  if (!gp) { pad.connected = false; return; }
+  pad.connected = true;
+  // sticks: esquerdo = mover (relativo à câmera, somado ao WASD), direito = câmera (mouselook)
+  pad.moveX = padDeadzone(gp.axes[0] ?? 0);
+  pad.moveY = -padDeadzone(gp.axes[1] ?? 0); // stick pra cima = frente
+  const rx = padDeadzone(gp.axes[2] ?? 0), ry = padDeadzone(gp.axes[3] ?? 0);
+  if (radialOpen) { // roda aberta → o stick direito escolhe a fatia
+    if (Math.hypot(rx, ry) > 0.4) {
+      const ang = Math.atan2(rx, -ry);
+      let k = Math.round(ang / (Math.PI * 2 / SPELL_SLOTS.length));
+      k = ((k % SPELL_SLOTS.length) + SPELL_SLOTS.length) % SPELL_SLOTS.length;
+      if (SPELL_SLOTS[k] !== radialSel) { radialSel = SPELL_SLOTS[k]; updateRadialHighlight(); }
+    }
+  } else {
+    const rate = 2.6 * settings.padLookSens;
+    camYaw -= rx * rate * dt;
+    camPitch = clamp(camPitch + ry * rate * dt * (settings.invertY ? -1 : 1), 0.06, 1.35);
+  }
+  const down = (i) => padPressed(gp, i) && !padPrev[i];
+  const up = (i) => !padPressed(gp, i) && padPrev[i];
+  // RT = melee (segura carrega flourish) — espelha LMB
+  if (down(PAD.RT)) { chargeStartT = time; netCharge('flourish', true); }
+  if (up(PAD.RT) && chargeStartT >= 0) { const held = time - chargeStartT; chargeStartT = -1; reticle.style.transform = 'scale(1)'; netCharge('flourish', false); meleeAttack(held >= FLOURISH_TIME); }
+  // LT = arco (segura tensiona) — espelha RMB
+  if (down(PAD.LT) && bowWeaponItem()) { bowDrawT = time; netCharge('bow', true); }
+  if (up(PAD.LT) && bowDrawT >= 0) { const charge = Math.min((time - bowDrawT) / BOW_FULL_DRAW, 1); bowDrawT = -1; reticle.style.transform = 'scale(1)'; netCharge('bow', false); rangedAttack(charge); }
+  if (down(PAD.A)) tryRoll();                                                   // A = esquiva
+  if (down(PAD.B)) { player.blocking = true; player.blockStartT = time; sendMsg({ t: 'block', on: true }); } // B = bloquear (segura)
+  if (up(PAD.B)) { player.blocking = false; sendMsg({ t: 'block', on: false }); }
+  if (down(PAD.X)) { spellChargeT = time; netCharge('spell', true); }           // X = magia (segura carrega)
+  if (up(PAD.X) && spellChargeT >= 0) { const lvl = spellLevel(time - spellChargeT); spellChargeT = -1; reticle.style.transform = 'scale(1)'; netCharge('spell', false); tryAbility(activeSpell, lvl); }
+  if (down(PAD.Y)) openRadial();                                                // Y = roda de feitiços (segura)
+  if (up(PAD.Y)) closeRadial();
+  if (settings.lockOnHold) { if (down(PAD.LB) && target) lockedTarget = target; if (up(PAD.LB)) lockedTarget = null; } // LB = lock-on
+  else if (down(PAD.LB)) toggleLockOn();
+  if (down(PAD.RB)) { const it = nearestInteract(); if (it) it.cb(); }          // RB = interagir
+  if (down(PAD.DU)) usePotion('hp');                                            // D-pad ↑/↓ = poções
+  if (down(PAD.DD)) usePotion('will');
+  const now = [];
+  for (let i = 0; i < gp.buttons.length; i++) now[i] = padPressed(gp, i);
+  padPrev = now;
+}
+
 addEventListener('keydown', (ev) => {
   if (!started) return;
-  if (chatOpen) return; // digitando no chat — o input trata as teclas
-  if (ev.code === 'Enter') { unlockMouse(); openChat(); return; }
-  if (ev.code === 'Tab') {
+  // captura de remapeamento (painel de opções): a próxima tecla vira o novo bind
+  if (rebindingAction) {
     ev.preventDefault();
-    // Fase 9: Tab-alvo aposentado (o soft-lock automático o substituiu). Tab agora é LOCK-ON
-    // (flourish target): trava/destrava no alvo atual, que passa a ficar fixo mesmo olhando pra longe.
-    if (lockedTarget) { lockedTarget = null; toast('🔓 Lock-on solto'); beep(440, 0.05, 'sine', 0.03); }
-    else if (target) { lockedTarget = target; toast('🔒 Lock-on'); beep(880, 0.05, 'sine', 0.03); }
+    if (ev.code !== 'Escape') { settings.binds[rebindingAction] = ev.code; saveSettings(); }
+    rebindingAction = null; renderSettings();
     return;
   }
-  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; if (fishing.active) endFishing(); return; }
+  if (chatOpen) return; // digitando no chat — o input trata as teclas
+  if (ev.code === 'Enter') { unlockMouse(); openChat(); return; }
+  if (ev.code === settings.binds.lockon) {
+    ev.preventDefault();
+    // Fase 48: lock-on por TOGGLE (padrão) ou HOLD (segurar). Fase 9: substitui o Tab-alvo antigo.
+    if (settings.lockOnHold) { if (target) lockedTarget = target; }
+    else toggleLockOn();
+    return;
+  }
+  if (ev.code === 'Escape') { setTarget(null); dialog.style.display = 'none'; $('charPanel').style.display = 'none'; $('invPanel').style.display = 'none'; $('talPanel').style.display = 'none'; $('setPanel').style.display = 'none'; if (fishing.active) endFishing(); return; }
   if (fishing.active) { if (ev.code === 'Space') { ev.preventDefault(); hookFish(); } return; }
-  if (ev.code === 'KeyF') { unlockMouse(); const it = nearestInteract(); if (it) it.cb(); return; }
+  if (ev.code === 'KeyO') { unlockMouse(); toggleSettings(); return; } // Fase 48: painel de Opções
+  if (ev.code === settings.binds.interact) { unlockMouse(); const it = nearestInteract(); if (it) it.cb(); return; }
   if (ev.code === 'KeyC') { unlockMouse(); toggleCharPanel(); return; }
   if (ev.code === 'KeyI') { unlockMouse(); toggleInventory(); return; }
   if (ev.code === 'KeyT') { unlockMouse(); toggleTalents(); return; }
-  if (ev.code === 'ShiftLeft' || ev.code === 'ShiftRight') { tryRoll(); return; }
-  if (ev.code === 'KeyQ' && !ev.repeat) {
+  if (ev.code === settings.binds.dodge) { tryRoll(); return; }
+  if (ev.code === settings.binds.block && !ev.repeat) {
     player.blocking = true;
     player.blockStartT = time;
+    sendMsg({ t: 'block', on: true }); // Fase 32: início do bloqueio → janela de parry no servidor (Fase 33)
     return;
   }
   if (ev.code === 'KeyM') { toast(toggleMusic() ? '🎵 Música ligada' : '🔇 Música desligada'); return; }
-  if (ev.code === 'KeyE' && !ev.repeat) { tryAbility(activeSpell); return; } // lança o feitiço ativo (Fase 6)
-  if (ev.code === 'KeyR' && !ev.repeat) { openRadial(); return; }            // abre a roda de feitiços (Fase 6)
-  if (ev.code.startsWith('Digit')) {
-    // Fase 9: hotbar 1-8 aposentada (LMB melee / RMB arco / E magia cobrem os ataques).
-    // Sobram poções: 1 = vida, 2 = vontade.
-    const n = +ev.code.slice(5);
-    if (n === 1) usePotion('hp');
-    if (n === 2) usePotion('will');
-    return;
-  }
+  if (ev.code === settings.binds.magic && !ev.repeat) { spellChargeT = time; netCharge('spell', true); return; } // segura → carrega magia; solta → lança no nível (Fase 23)
+  if (ev.code === settings.binds.wheel && !ev.repeat) { openRadial(); return; } // abre a roda de feitiços (Fase 6)
+  if (ev.code === settings.binds.potionHp) { usePotion('hp'); return; }
+  if (ev.code === settings.binds.potionWill) { usePotion('will'); return; }
   keys[ev.code] = true;
 });
 addEventListener('keyup', (ev) => {
   keys[ev.code] = false;
-  if (ev.code === 'KeyQ') player.blocking = false;
-  if (ev.code === 'KeyR') closeRadial(); // solta R → seleciona o feitiço destacado (Fase 6)
+  if (ev.code === settings.binds.block) { player.blocking = false; sendMsg({ t: 'block', on: false }); } // Fase 32
+  if (ev.code === settings.binds.wheel) closeRadial(); // solta → seleciona o feitiço destacado (Fase 6)
+  if (settings.lockOnHold && ev.code === settings.binds.lockon) lockedTarget = null; // solta o lock-on no modo HOLD
+  if (ev.code === settings.binds.magic && spellChargeT >= 0) { // solta → lança a magia no nível carregado (Fase 23)
+    const lvl = spellLevel(time - spellChargeT);
+    spellChargeT = -1;
+    reticle.style.transform = 'scale(1)';
+    netCharge('spell', false); // Fase 32
+    tryAbility(activeSpell, lvl);
+  }
 });
 
 // ---------- câmera mouselook (Fase 1 combate) ----------
@@ -2491,7 +2893,7 @@ function canLock() {
   // "aberto" = display computado != none (os painéis nascem escondidos por CSS, com style inline "")
   const shown = (el) => !!el && getComputedStyle(el).display !== 'none';
   return started && !chatOpen && !fishing.active
-    && !shown(dialog) && !shown($('charPanel')) && !shown($('invPanel')) && !shown($('talPanel'));
+    && !shown(dialog) && !shown($('charPanel')) && !shown($('invPanel')) && !shown($('talPanel')) && !shown($('setPanel'));
 }
 // retícula de mira (Fase 5): crosshair no centro, visível durante o mouselook
 const reticle = document.createElement('div');
@@ -2501,12 +2903,17 @@ document.body.appendChild(reticle);
 document.addEventListener('pointerlockchange', () => {
   mouseLocked = document.pointerLockElement === canvas;
   reticle.style.display = mouseLocked ? 'block' : 'none';
-  if (!mouseLocked) chargeStartT = -1; // destravou no meio da carga → cancela (Fase 13)
+  if (!mouseLocked) { // destravou no meio da carga/tensão → cancela (Fase 13/21/23) + avisa o servidor (Fase 32)
+    if (chargeStartT >= 0) netCharge('flourish', false);
+    if (bowDrawT >= 0) netCharge('bow', false);
+    if (spellChargeT >= 0) netCharge('spell', false);
+    chargeStartT = -1; bowDrawT = -1; spellChargeT = -1;
+  }
 });
 
 // ---------- roda de feitiços (Fase 6): segurar R abre, mouse escolhe a fatia, solta seleciona ----------
-const SPELL_SLOTS = [1, 2, 3, 4, 5];                       // índices em `abilities` (os feitiços)
-const SPELL_ICON = { 1: '🔥', 2: '⚡', 3: '💨', 4: '⏳', 5: '💚' };
+const SPELL_SLOTS = [1, 2, 3, 6, 7, 4, 5];                 // índices em `abilities` (os feitiços) — Fase 25: +❄️ Gelo, 🛡️ Escudo
+const SPELL_ICON = { 1: '🔥', 2: '⚡', 3: '💨', 4: '⏳', 5: '💚', 6: '❄️', 7: '🛡️' };
 let activeSpell = 1;                                        // feitiço ativo (tecla E lança este)
 let radialOpen = false, radialSel = 1, radMX = 0, radMY = 0;
 const radialEl = document.createElement('div');
@@ -2547,8 +2954,10 @@ function closeRadial() {
 
 canvas.addEventListener('mousedown', (e) => {
   if (mouseLocked) {
-    if (e.button === 0 && started) chargeStartT = time; // segura LMB → carrega flourish; solta → golpe (Fase 13)
-    else if (e.button === 2 && started) rangedAttack(); // RMB = à distância / arco (Fase 5)
+    if (e.button === 0 && started) { chargeStartT = time; netCharge('flourish', true); } // segura LMB → carrega flourish; solta → golpe (Fase 13)
+    else if (e.button === 2 && started) { // RMB: segura pra tensionar o arco, solta pra atirar (Fase 21)
+      if (bowWeaponItem()) { bowDrawT = time; netCharge('bow', true); } // Fase 27: pode tensionar se possui um arco (equipado ou no inventário)
+    }
     return;
   }
   // qualquer clique no jogo engata o mouselook (o navegador só trava o cursor a partir de um gesto)
@@ -2567,8 +2976,9 @@ addEventListener('mousemove', (e) => {
     return;
   }
   if (mouseLocked) {
-    camYaw -= e.movementX * LOOK_SENS;
-    camPitch = clamp(camPitch + e.movementY * LOOK_SENS, 0.06, 1.35);
+    // Fase 48: sensibilidade ajustável + inverter Y (acessibilidade)
+    camYaw -= e.movementX * LOOK_SENS * settings.lookSens;
+    camPitch = clamp(camPitch + e.movementY * LOOK_SENS * settings.lookSens * (settings.invertY ? -1 : 1), 0.06, 1.35);
     return;
   }
   if (!dragging) return;
@@ -2584,7 +2994,14 @@ addEventListener('mouseup', (e) => {
     const held = time - chargeStartT;
     chargeStartT = -1;
     reticle.style.transform = 'scale(1)';
+    netCharge('flourish', false); // Fase 32
     meleeAttack(held >= FLOURISH_TIME);
+  } else if (e.button === 2 && bowDrawT >= 0) { // soltou RMB → atira o arco com a carga acumulada (Fase 21)
+    const charge = Math.min((time - bowDrawT) / BOW_FULL_DRAW, 1);
+    bowDrawT = -1;
+    reticle.style.transform = 'scale(1)';
+    netCharge('bow', false); // Fase 32
+    rangedAttack(charge);
   }
 });
 canvas.addEventListener('wheel', (e) => {
@@ -2620,12 +3037,13 @@ function doClickAt(ndcX, ndcY) {
 // ============================================================ death
 function playerDie() {
   player.dead = true;
+  telemetry.deaths++; // Fase 49
   $('deathOverlay').style.display = 'flex';
   beep(80, 0.8, 'sawtooth', 0.08, -30);
   setTimeout(() => {
     player.pos.set(0, terrainHeight(0, 10), 10);
     player.hp = player.maxHp; player.will = player.maxWill;
-    player.dead = false; player.mult = 0;
+    player.dead = false; player.mult = 0; player.shieldT = 0; player.knockX = 0; player.knockZ = 0;
     // a simulação vê o herói morto (flag dead) e os inimigos voltam pra casa sozinhos
     $('deathOverlay').style.display = 'none';
   }, 3500);
@@ -2739,16 +3157,22 @@ function startGame(fromSave) {
   connectNet(
     () => {
       const cs = combatStats();
+      // Fase 29: carga/mira remota — declara o que estou tensionando/carregando (o Bloco D/Fase 36 renderiza suave)
+      let casting = '', castCharge = 0;
+      if (bowDrawT >= 0) { casting = 'bow'; castCharge = Math.min((time - bowDrawT) / BOW_FULL_DRAW, 1); }
+      else if (spellChargeT >= 0) { casting = 'spell'; castCharge = Math.min((time - spellChargeT) / SPELL_L3, 1); }
+      else if (chargeStartT >= 0) { casting = 'flourish'; castCharge = Math.min((time - chargeStartT) / FLOURISH_TIME, 1); }
       return {
         x: player.pos.x, z: player.pos.z, ry: heroModel.group.rotation.y,
         name: NET_NAME, lvl: player.level,
+        casting, castCharge,
         moving: !!player.moving && !player.dead, dead: player.dead,
         halo: heroModel.halo.visible, horns: heroModel.horns.visible,
         luck: player.luckCharm,
         str: cs.str, skl: cs.skl, wil: cs.wil,
         wpn: player.equipped.wpn,
         wpnKind: cs.wpnKind, wpnDmg: cs.wpnDmg, wpnRange: cs.wpnRange, wpnKnock: cs.wpnKnock, spellMult: cs.spellMult,
-        critBonus: cs.critBonus, chainBonus: cs.chainBonus, wanted: isWanted(),
+        critBonus: cs.critBonus, chainBonus: cs.chainBonus, perks: cs.perks, wanted: isWanted(),
         aHead: player.armor.head?.arm ?? '', aChest: player.armor.chest?.arm ?? '',
         aLegs: player.armor.legs?.arm ?? '', aBoots: player.armor.boots?.arm ?? '',
       };
@@ -2766,6 +3190,9 @@ function startGame(fromSave) {
         } else {
           saveGame(); // registra o personagem novo no servidor
         }
+        // Fase 38: ao (re)conectar, zera o estado TRANSIENTE de combate — não volta preso bloqueando/carregando
+        player.blocking = false; chargeStartT = -1; bowDrawT = -1; spellChargeT = -1;
+        player.mult = 0; player.knockX = 0; player.knockZ = 0; player.invulnT = 0;
       },
       onConnect: (id) => toast(`🌐 Albion online — você é ${NET_NAME} (#${id})`),
     }
@@ -3116,9 +3543,10 @@ function ensureRemoteHero(id) {
   scene.add(model.group);
   const plate = document.createElement('div');
   plate.className = 'plate';
-  plate.innerHTML = `<div class="pname" style="color:#7fd0ff"></div>`;
+  // Fase 29: indicador de carga/mira do aliado (tensionando arco / carregando magia / flourish)
+  plate.innerHTML = `<div class="pname" style="color:#7fd0ff"></div><div class="rcharge" style="display:none;font-size:12px;text-shadow:0 0 4px #000"><span class="rcico"></span><span class="rcbar" style="display:inline-block;height:4px;vertical-align:middle;background:linear-gradient(90deg,#ffd24a,#ff7a2a);border-radius:2px;width:0"></span></div>`;
   $('plates').appendChild(plate);
-  r = { model, plate, nameEl: plate.querySelector('.pname'), x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null, actor: null };
+  r = { model, plate, nameEl: plate.querySelector('.pname'), chargeEl: plate.querySelector('.rcharge'), chargeIco: plate.querySelector('.rcico'), chargeBar: plate.querySelector('.rcbar'), casting: '', castCharge: 0, swingT: 0, x: 0, z: 0, ry: 0, walkT: 0, init: false, wpnKey: null, actor: null };
   remoteHeroes.set(id, r);
   // modelo GLTF animado — o mesmo Knight do herói local (cacheado, então é barato)
   loadGLTF('/models/characters/Knight_Male.gltf').then((gltf) => {
@@ -3139,19 +3567,23 @@ function updateRemoteHeroes(dt) {
   for (const [id, s] of net.remotes) {
     const r = ensureRemoteHero(id);
     if (!r.init) { r.x = s.x; r.z = s.z; r.ry = s.ry; r.init = true; }
-    // interpolação simples até o último estado recebido
-    const k = Math.min(1, dt * 10);
-    r.x += (s.x - r.x) * k;
-    r.z += (s.z - r.z) * k;
-    let dr = s.ry - r.ry;
-    while (dr > Math.PI) dr -= Math.PI * 2;
-    while (dr < -Math.PI) dr += Math.PI * 2;
-    r.ry += dr * k;
+    // Fase 31: interpolação de entidade — renderiza ~100ms no passado (suave, independe de framerate)
+    const smp = sampleEntity('p' + id, performance.now() - INTERP_DELAY_MS);
+    if (smp) { r.x = smp.x; r.z = smp.z; r.ry = smp.ry; }
+    else { r.x = s.x; r.z = s.z; r.ry = s.ry; }
     const y = terrainHeight(r.x, r.z);
     r.model.group.position.set(r.x, y, r.z);
     r.model.group.rotation.y = r.ry;
     r.model.halo.visible = !!s.halo;
     r.model.horns.visible = !!s.horns;
+    // Fase 29: carga/mira do aliado — guarda no modelo de dados e mostra um indicador legível
+    r.casting = s.casting ?? '';
+    r.castCharge = s.castCharge ?? 0;
+    if (r.casting) {
+      r.chargeEl.style.display = 'block';
+      r.chargeIco.textContent = r.casting === 'bow' ? '🏹' : r.casting === 'spell' ? '✨' : '⚔️';
+      r.chargeBar.style.width = `${Math.round(r.castCharge * 26)}px`;
+    } else if (r.chargeEl.style.display !== 'none') r.chargeEl.style.display = 'none';
     // arma dos outros heróis (no osso se GLTF, senão no mount procedural)
     if (r.wpnKey !== s.wpn) {
       r.wpnKey = s.wpn;
@@ -3160,7 +3592,8 @@ function updateRemoteHeroes(dt) {
     }
     if (r.actor) {
       // modelo GLTF animado (idle/walk/run) — igual ao herói local
-      r.actor.setBase(s.moving ? ['Run', 'Walk'] : ['Idle']);
+      // Fase 36: enquanto o aliado CARREGA (arco/magia/flourish) fica numa pose focada (Idle), não correndo
+      r.actor.setBase(r.casting ? ['Idle'] : (s.moving ? ['Run', 'Walk'] : ['Idle']));
       r.actor.update(dt);
     } else {
       // fallback procedural: armadura, físico das disciplinas e passada
@@ -3180,7 +3613,8 @@ function updateRemoteHeroes(dt) {
       r.model.legL.rotation.x = sw;
       r.model.legR.rotation.x = -sw;
       r.model.armL.rotation.x = -sw * 0.7;
-      r.model.armR.rotation.x = sw * 0.7;
+      if (r.swingT > 0) { r.swingT -= dt; r.model.armR.rotation.x = -2.2 * (r.swingT / 0.3); } // Fase 36: swing procedural
+      else r.model.armR.rotation.x = sw * 0.7;
     }
     r.nameEl.textContent = `${s.name} [${s.lvl}]`;
   }
@@ -3255,11 +3689,14 @@ function tick() {
   // hit-stop (Fase 43): breve câmera-lenta ao acertar um golpe corpo-a-corpo → dá "peso"
   if (hitStopT > 0) { hitStopT -= dt; dt *= 0.14; }
   time += dt;
+  pollGamepad(dt); // Fase 48: sticks → mover/câmera, botões → ações (mesmas funções do teclado/mouse)
 
   // ---------- player movement ----------
   if (started && !player.dead && dialog.style.display !== 'block') {
-    const fw = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
-    const st = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+    // Fase 48: teclas remapeáveis (setas seguem como atalho fixo) + stick esquerdo do gamepad somado
+    const bd = settings.binds;
+    const fw = clamp((keys[bd.forward] || keys.ArrowUp ? 1 : 0) - (keys[bd.back] || keys.ArrowDown ? 1 : 0) + pad.moveY, -1, 1);
+    const st = clamp((keys[bd.right] || keys.ArrowRight ? 1 : 0) - (keys[bd.left] || keys.ArrowLeft ? 1 : 0) + pad.moveX, -1, 1);
     const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
     const rx = -fz, rz = fx;
     const faceY = Math.atan2(fx, fz); // direção da câmera (pra onde olho)
@@ -3279,9 +3716,9 @@ function tick() {
         if (player.rollBuf && time - player.rollBuf < 0.3) { player.rollBuf = 0; tryRoll(); } // dodge bufferado
       }
     } else if (ml > 0) {
+      player.lastDirX = mx / ml; player.lastDirZ = mz / ml;
+      const speed = 9 * Math.min(1, ml); // Fase 48: stick analógico anda mais devagar quando pouco inclinado (teclado = sempre cheio)
       mx /= ml; mz /= ml;
-      player.lastDirX = mx; player.lastDirZ = mz;
-      const speed = 9;
       movePlayerTo(player.pos.x + mx * speed * dt, player.pos.z + mz * speed * dt);
       // Fase 2: herói encara a câmera (não o movimento) → W frente, A/D strafe, S ré,
       // todos mirando pra onde olho. (Anims de strafe/ré dedicadas: refino do Bloco B.)
@@ -3294,6 +3731,12 @@ function tick() {
     if (player.lungeT > 0) {
       player.lungeT -= dt;
       movePlayerTo(player.pos.x + player.lungeDX * dt, player.pos.z + player.lungeDZ * dt);
+    }
+    // Fase 34: knockback PREVISTO ao apanhar — reação local instantânea (sem round-trip), decai rápido
+    if (Math.abs(player.knockX) + Math.abs(player.knockZ) > 0.02) {
+      movePlayerTo(player.pos.x + player.knockX * dt, player.pos.z + player.knockZ * dt);
+      const decay = Math.max(0, 1 - 9 * dt);
+      player.knockX *= decay; player.knockZ *= decay;
     }
     player.moving = ml > 0 || player.rollT > 0 || player.lungeT > 0;
     // passos por superfície (o pé no chão dita o som)
@@ -3314,7 +3757,8 @@ function tick() {
       player.pos.y = groundY;
     }
   }
-  heroModel.group.position.copy(player.pos);
+  reconcileHero(dt); // Fase 34: reconciliação lógica (server-wins em desync gritante) + suavização de render
+  heroModel.group.position.copy(heroRenderPos);
   // bugfix (Fase 18): a cambalhota do rolamento girava `rotation.x` em torno dos PÉS (origem do grupo
   // no chão) → o corpo mergulhava no chão. Levanta o grupo num arco (rc·(1-cos θ)) pra pivotar no
   // CENTRO do herói — a cambalhota fica acima do chão o giro inteiro.
@@ -3356,7 +3800,11 @@ function tick() {
 
   // ---------- timers / regen ----------
   if (started && !player.dead) {
-    player.will = Math.min(player.maxWill, player.will + 4 * (hasTalent('serenidade') ? 1.5 : 1) * dt);
+    // Fase 26: regen de Vontade consciente de combate — sustenta um ritmo mágico sem spam nem seca.
+    // Em combate regenera devagar (não dá pra spammar magia); fora de combate refila rápido (sem seca ao explorar).
+    const willIdle = time - player.lastCombat > 3;
+    const willRate = (willIdle ? 14 : 6) * (hasTalent('serenidade') ? 1.5 : 1);
+    player.will = Math.min(player.maxWill, player.will + willRate * dt);
     player.stam = Math.min(player.maxStam, player.stam + stamRegen() * dt);
     if (time - player.lastCombat > 5) player.hp = Math.min(player.maxHp, player.hp + 3 * dt);
     // ficha criminal esfria com o tempo longe de novos crimes (a lei esquece devagar)
@@ -3365,9 +3813,15 @@ function tick() {
   if (player.invulnT > 0) player.invulnT -= dt;
   gcd = Math.max(0, gcd - dt);
   for (let i = 0; i < cooldowns.length; i++) cooldowns[i] = Math.max(0, cooldowns[i] - dt);
-  if (player.multT > 0) { player.multT -= dt; if (player.multT <= 0) player.mult = 0; }
   if (player.slowT > 0) player.slowT -= dt;
   $('slowfx').style.opacity = player.slowT > 0 ? 1 : 0;
+  if (player.shieldT > 0) { // Escudo Arcano (Fase 25): bolha pulsa ao redor do herói
+    player.shieldT -= dt;
+    shieldBubble.visible = true;
+    shieldBubble.position.copy(player.pos).add(new THREE.Vector3(0, 1, 0));
+    shieldBubble.material.opacity = 0.14 + 0.08 * Math.abs(Math.sin(time * 6)); // leve pulso
+    shieldBubble.rotation.y += dt * 0.6;
+  } else if (shieldBubble.visible) shieldBubble.visible = false;
 
   // ---------- world / entities ----------
   if (net.connected && net.serverDayT !== null) SKY.dayT = net.serverDayT; // hora do mundo é do servidor
@@ -3424,6 +3878,24 @@ function tick() {
   // ---------- projectiles (visuais — dano e explosão vêm da simulação) ----------
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
+    if (p.straight) {
+      // Fase 22/24: projétil balístico reto (flecha ou bola) — dano/colisão são autoritativos no sim
+      const sx = p.vx * dt, sz = p.vz * dt;
+      p.mesh.position.x += sx; p.mesh.position.z += sz;
+      p.dist += Math.hypot(sx, sz);
+      if (p.orient) p.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tmpV.set(p.vx, 0, p.vz).normalize());
+      if (p.spin) { p.mesh.rotation.x += dt * 11; p.mesh.rotation.y += dt * 14; } // estilhaço de gelo tumba (Fase 25)
+      if (p.fire && Math.random() < dt * 55) { // rastro de fogo da Bola (Fase 44/24)
+        _particle(p.mesh.position, Math.random() < 0.5 ? 0xffb020 : 0xff5a1a, 0.09 + Math.random() * 0.06, (Math.random() - 0.5) * 1.2, 0.4 + Math.random() * 1.2, (Math.random() - 0.5) * 1.2, 2, 0.3 + Math.random() * 0.2);
+      }
+      // impacto cosmético: some ao encostar num inimigo (o dano/explosão reais vêm do sim: edmg/boom)
+      let near = false;
+      for (const v of enemyViews.values()) {
+        if (v.state !== 'dead' && Math.hypot(v.pos.x - p.mesh.position.x, v.pos.z - p.mesh.position.z) < 0.9) { near = true; break; }
+      }
+      if (near || p.dist >= p.maxDist) { scene.remove(p.mesh); projectiles.splice(i, 1); }
+      continue;
+    }
     const dest = tmpV.copy(p.target.pos).add(new THREE.Vector3(0, 1, 0));
     const dir = dest.sub(p.mesh.position);
     const d = dir.length();
@@ -3462,7 +3934,16 @@ function tick() {
       const ch = Math.min((time - chargeStartT) / FLOURISH_TIME, 1);
       reticle.style.transform = `scale(${(1 + ch * 1.3).toFixed(2)})`;
       reticle.style.borderColor = ch >= 1 ? 'rgba(255,210,70,1)' : 'rgba(255,150,60,0.9)';
+    } else if (bowDrawT >= 0) { // indicador de tensão do arco (Fase 21): encolhe e esfria (ciano→branco) ao cheio
+      const ch = Math.min((time - bowDrawT) / BOW_FULL_DRAW, 1);
+      reticle.style.transform = `scale(${(1.6 - ch * 0.9).toFixed(2)})`; // mira aperta conforme tensiona
+      reticle.style.borderColor = ch >= 1 ? 'rgba(180,240,255,1)' : `rgba(140,210,255,${(0.5 + ch * 0.5).toFixed(2)})`;
+    } else if (spellChargeT >= 0) { // indicador de carga da magia (Fase 23): cresce por nível e fica arcano (azul→roxo)
+      const lv = spellLevel(time - spellChargeT);
+      reticle.style.transform = `scale(${(1 + lv * 0.5).toFixed(2)})`;
+      reticle.style.borderColor = lv >= 3 ? 'rgba(210,120,255,1)' : lv >= 2 ? 'rgba(170,140,255,0.95)' : 'rgba(150,160,255,0.8)';
     } else {
+      reticle.style.transform = 'scale(1)';
       reticle.style.borderColor = target ? 'rgba(255,90,90,0.85)' : 'rgba(255,255,255,0.5)'; // vermelho ao travar
     }
   }
@@ -3498,6 +3979,20 @@ function tick() {
     camera.position.y += (Math.random() - 0.5) * shake;
   }
   camera.lookAt(lookPos.x + rx, lookPos.y + 2, lookPos.z + rz);
+  // Fase 46 — punch de FOV (zoom-in) nos golpes fortes: decai rápido e volta ao FOV base
+  if (camPunch > 0.01) {
+    camPunch = Math.max(0, camPunch - dt * (camPunch * 6 + 3));
+    camera.fov = BASE_FOV - camPunch;
+    camera.updateProjectionMatrix();
+  } else if (camera.fov !== BASE_FOV) {
+    camera.fov = BASE_FOV;
+    camera.updateProjectionMatrix();
+  }
+  // Fase 46 — roll/dutch kick: leve inclinação lateral que assenta (aplicada DEPOIS do lookAt)
+  if (Math.abs(camRoll) > 0.0004) {
+    camera.rotateZ(camRoll);
+    camRoll *= Math.max(0, 1 - dt * 9);
+  }
 
   // ---------- HUD ----------
   if (started) {
@@ -3529,8 +4024,15 @@ function tick() {
       } else cdEl.style.display = 'none';
     }
     const multEl = $('mult');
-    if (player.mult > 1) { multEl.style.display = 'block'; multEl.textContent = 'x' + player.mult; }
-    else multEl.style.display = 'none';
+    if (player.mult > 1) {
+      multEl.style.display = 'block';
+      multEl.textContent = 'x' + player.mult;
+      // Fase 19: a cor/brilho esquentam conforme a fluência sobe (branco→ouro→laranja→vermelho) — streak visível e recompensador
+      const tier = Math.min(player.mult, 25);
+      const col = tier >= 20 ? '#ff4a3c' : tier >= 12 ? '#ff9a2a' : tier >= 6 ? '#ffd24a' : '#fff4d6';
+      multEl.style.color = col;
+      multEl.style.textShadow = `0 0 ${14 + tier}px ${col}, 2px 2px 2px #000`;
+    } else multEl.style.display = 'none';
 
     // clock
     const h = Math.floor(skyHour());
@@ -3615,14 +4117,32 @@ window.FABLE = {
   startGame, gtao, godrayUniforms, smaa, sharpen,
   setScene: (s) => { inCave = s === 'cave'; _dbgCombat = s === 'combat'; }, // debug do grade por cena (Fase 35)
   vfx: { impact: (p, big) => impactBurst(p, big), swoosh: (p, ry) => bladeSwoosh(p, ry), hitstop: (t) => { hitStopT = t; }, // debug VFX (Fase 43)
-    fire: (p) => fireBurst(p), lightning: (a, b) => lightningStrike(a, b), shock: (p) => shockDust(p) }, // magia por escola (Fase 44)
+    fire: (p) => fireBurst(p), lightning: (a, b) => lightningStrike(a, b), shock: (p) => shockDust(p), // magia por escola (Fase 44)
+    juice: (p) => juiceHit(p) }, // Fase 46: dispara o punch de câmera (hitstop+shake+zoom+roll)
+  // Fase 46: leituras do juice de câmera pra verificação
+  get juiceState() { return { hitStopT: +hitStopT.toFixed(3), shake: +shake.toFixed(3), camPunch: +camPunch.toFixed(3), camRoll: +camRoll.toFixed(4), fov: +camera.fov.toFixed(2), baseFov: BASE_FOV }; },
   lod: { setCulling, cullStats, draws: () => renderer.info.render.calls }, // debug LOD/culling (Fase 46)
   perf: () => ({ frameMs: +_frameMs.toFixed(2), fps: Math.round(1000 / _frameMs), // orçamento + pools (Fase 47)
     particlePool: { total: _partFree.length + _partActive.length, active: _partActive.length, free: _partFree.length },
     effects: effects.length }),
   // debug do combate de ação (Blocos A/B) — ações são gated por pointer-lock, então testamos por aqui
-  combat: { attack: () => meleeAttack(), flourish: () => meleeAttack(true), ranged: () => rangedAttack(), castSpell: () => tryAbility(activeSpell), dodge: () => tryRoll(), frontal: (r) => frontalTarget(r ?? equippedStats().range + 1.2), radial: { open: openRadial, close: closeRadial, sel: (s) => { radialSel = s; } } },
+  combat: { attack: () => meleeAttack(), flourish: () => meleeAttack(true), ranged: (c) => rangedAttack(c ?? 0), castSpell: (lv) => tryAbility(activeSpell, lv ?? 1), dodge: () => tryRoll(), frontal: (r) => frontalTarget(r ?? equippedStats().range + 1.2), radial: { open: openRadial, close: closeRadial, sel: (s) => { radialSel = s; } } },
   get camYaw() { return camYaw; }, get mouseLocked() { return mouseLocked; }, get target() { return target; }, get activeSpell() { return activeSpell; }, get radialOpen() { return radialOpen; }, get lockedTarget() { return lockedTarget; },
+  // Fase 48: input — ler/ajustar settings, ver o gamepad, remapear, e rodar o poll com um gamepad falso (verificação)
+  // Fase 49: telemetria de combate — resumo pra tunar (TTK, dano por fonte, uso de dodge/parry, mortes)
+  telemetry, telemetrySummary: () => telemetry.summary(),
+  input: {
+    settings, DEFAULT_BINDS,
+    open: () => toggleSettings(),
+    rebind: (a, c) => { settings.binds[a] = c; saveSettings(); },
+    setSens: (v) => { settings.lookSens = v; saveSettings(); },
+    invertY: (b) => { settings.invertY = !!b; saveSettings(); },
+    lockOnHold: (b) => { settings.lockOnHold = !!b; saveSettings(); },
+    pad: () => ({ connected: pad.connected, moveX: +pad.moveX.toFixed(3), moveY: +pad.moveY.toFixed(3) }),
+    deadzone: (v) => padDeadzone(v),                 // expõe a curva de zona morta pra teste
+    poll: (dt) => pollGamepad(dt ?? 0.016),          // roda o poll (usa navigator.getGamepads — mocke pra testar)
+    toggleLockOn: () => toggleLockOn(),
+  },
 };
 
 updateHeroBody(); // arma inicial na mão + visual das disciplinas

@@ -14,22 +14,27 @@ export interface SimPlayerView {
 
 export type SimEvent =
   | { t: 'aggro'; id: number }
-  | { t: 'eatk'; id: number; pid: number; dmg: number }
+  | { t: 'eatk'; id: number; pid: number; dmg: number; blk?: 'dodge' | 'parry' | 'block' } // blk = veredito do servidor (Fase 33)
   | { t: 'edmg'; id: number; amount: number; pid: number; src: 'melee' | 'ranged' | 'magic'; crit: boolean }
   | { t: 'edie'; id: number; killerPid: number }
   | { t: 'eleap'; id: number }
-  | { t: 'eland'; id: number; pid: number; dmg: number }
+  | { t: 'eland'; id: number; pid: number; dmg: number; blk?: 'dodge' | 'parry' | 'block' }  // idem — leap-land também é validado (Fase 33)
   | { t: 'eheal'; id: number; targetId: number; amount: number }   // xamã curando aliado
   | { t: 'ebomb'; id: number; x: number; z: number }               // besouro-bomba explodiu
   | { t: 'ehowl'; id: number }                                     // uivo do lobo alfa
   | { t: 'eslam'; id: number; x: number; z: number }               // pancada de área do troll
   | { t: 'estun'; id: number }                                     // inimigo atordoado (parry)
+  | { t: 'ewind'; id: number; pid: number; dur: number }           // TELEGRAFIA do golpe (Fase 41) — dá pra reagir
+  | { t: 'ephase'; id: number; phase: number }                     // chefe entrou numa nova FASE (Fase 44) — rugido/fúria
   // efeitos visuais de magia — emitidos pelo CombatSim, renderizados por todos os clientes
   | { t: 'bolt'; ax: number; az: number; ay: number; bx: number; bz: number; by: number }
   | { t: 'boom'; x: number; z: number }
   | { t: 'shock'; x: number; z: number }
+  | { t: 'frost'; x: number; z: number }                          // estilhaço de gelo acertou (escola Gelo, Fase 25)
+  | { t: 'estat'; id: number; kind: 'freeze' | 'shock' | 'fear' } // status aplicado — o cliente rotula (Fase 28)
   | { t: 'ecombo'; id: number; pid: number }   // 3º golpe do combo conectou
-  | { t: 'eexec'; id: number; pid: number };   // execução de inimigo atordoado (Fase 15)
+  | { t: 'eexec'; id: number; pid: number }    // execução de inimigo atordoado (Fase 15)
+  | { t: 'eact'; pid: number; a: 'melee' | 'bow' | 'spell' | 'flourish' }; // ação de um HERÓI — anim remota (Fase 36)
 
 export type EnemyState = 'idle' | 'chase' | 'attack' | 'return' | 'dead' | 'leap' | 'surrender' | 'flee';
 
@@ -51,6 +56,14 @@ export interface SimEnemy {
   isLeader: boolean;
   stunT: number;
   hitstunT: number;     // stagger breve por golpe — reação a hit (Fase 14)
+  chillT: number;       // lentidão (escola Gelo, Fase 25) — anda/ataca em câmera lenta
+  windupT: number;      // TELEGRAFIA do ataque (Fase 41) — >0 = rearmando o golpe; esquiva/parry aqui
+  windupPid: number;    // alvo do golpe telegrafado
+  phase: number;        // FASE do chefe por HP (Fase 44) — 0/1/2; escala agressão + onda de choque na virada
+  // status effects integrados (Fase 28) — ligados às escolas, resolvidos no sim
+  frozenT: number;      // CONGELADO (Gelo carregado) — parado total + executável (estilhaça)
+  shockT: number;       // CHOQUE (Raio) — interrompe brevemente (não age)
+  fearT: number;        // MEDO (Empurrão forte) — foge do herói
   // queimadura (Bola de Fogo)
   burnT: number;
   burnTick: number;
@@ -67,6 +80,8 @@ export interface EnemySnap {
 }
 
 const NOCTURNAL = new Set(['lobo', 'hobbe', 'balverine']);
+const WINDUP_TIME = 0.5; // Fase 41: janela de telegrafia do ataque — tempo pra ler e reagir (dodge/parry)
+const MAX_ATTACKERS = 2;  // Fase 42: quantos inimigos atacam AO MESMO TEMPO por herói (os outros cercam/esperam)
 
 export class EnemySim {
   enemies = new Map<number, SimEnemy>();
@@ -74,6 +89,39 @@ export class EnemySim {
   slowT = 0; // Tempo Lento: mágica de qualquer herói desacelera o mundo todo (co-op friendly)
   private nextId = 1;
   private lastPlayers: SimPlayerView[] = [];
+  private windCount = new Map<number, number>(); // Fase 42: quantos inimigos estão atacando cada herói (revezar)
+  // Fase 35: histórico curto de posições p/ lag comp — rebobina o inimigo pra onde o atacante o VIU (~100ms atrás)
+  private simTime = 0;
+  private hist = new Map<number, Array<{ t: number; x: number; z: number }>>();
+
+  /** posição do inimigo `backT` segundos atrás (interpolada) — p/ hit detection compensado. Fallback: atual. */
+  posAt(id: number, backT: number): { x: number; z: number } {
+    const e = this.enemies.get(id);
+    const h = this.hist.get(id);
+    if (!e) return { x: 0, z: 0 };
+    if (!h || h.length === 0 || backT <= 0) return { x: e.x, z: e.z };
+    const want = this.simTime - backT;
+    if (want >= h[h.length - 1].t) return { x: e.x, z: e.z };
+    if (want <= h[0].t) return { x: h[0].x, z: h[0].z };
+    for (let i = h.length - 1; i > 0; i--) {
+      const a = h[i - 1], b = h[i];
+      if (want >= a.t && want <= b.t) {
+        const f = b.t > a.t ? (want - a.t) / (b.t - a.t) : 0;
+        return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f };
+      }
+    }
+    return { x: e.x, z: e.z };
+  }
+  private recordHist(dt: number) {
+    this.simTime += dt;
+    const cut = this.simTime - 0.4; // mantém ~400ms
+    for (const e of this.enemies.values()) {
+      let h = this.hist.get(e.id);
+      if (!h) { h = []; this.hist.set(e.id, h); }
+      h.push({ t: this.simTime, x: e.x, z: e.z });
+      while (h.length > 2 && h[0].t < cut) h.shift();
+    }
+  }
 
   constructor() {
     for (let i = 0; i < 10; i++) {
@@ -133,7 +181,9 @@ export class EnemySim {
       knockX: 0, knockZ: 0,
       leapCd: 0, leapT: 0,
       leapFromX: 0, leapFromZ: 0, leapToX: 0, leapToZ: 0,
-      targetPid: null, isLeader, stunT: 0, hitstunT: 0,
+      targetPid: null, isLeader, stunT: 0, hitstunT: 0, chillT: 0,
+      windupT: 0, windupPid: -1, phase: 0,
+      frozenT: 0, shockT: 0, fearT: 0,
       burnT: 0, burnTick: 0, burnDmg: 0, burnPid: 0,
     };
     this.enemies.set(e.id, e);
@@ -167,6 +217,22 @@ export class EnemySim {
     // reação a hit (Fase 14): stagger breve — melee interrompe mais, ranged/magia dão só um flinch
     e.hitstunT = Math.max(e.hitstunT, src === 'melee' ? 0.22 : 0.1);
     this.events.push({ t: 'edmg', id: e.id, amount: dmg, pid: attackerPid, src, crit });
+    // Fase 44: FASES de chefe — ao cruzar 66%/33% de HP, entra em FÚRIA (rugido + onda de choque + escala agressão)
+    if (ENEMY_DEFS[e.type].boss && e.hp > 0) {
+      const r = e.hp / e.maxHp;
+      const np = r < 0.33 ? 2 : r < 0.66 ? 1 : 0;
+      if (np > e.phase) {
+        e.phase = np;
+        this.events.push({ t: 'ephase', id: e.id, phase: np });
+        e.windupT = 0; e.windupPid = -1; e.attackTimer = 0; // reseta o ataque atual — entra na fúria fresco
+        // ONDA DE CHOQUE: empurra + fere quem está PERTO (esquivável mantendo distância / com i-frame)
+        const def = ENEMY_DEFS[e.type];
+        for (const p of this.lastPlayers) {
+          if (p.dead || Math.hypot(p.x - e.x, p.z - e.z) >= 6) continue;
+          this.events.push({ t: 'eatk', id: e.id, pid: p.id, dmg: Math.round(def.dmg[0] * 0.6) });
+        }
+      }
+    }
     if (e.state === 'idle' || e.state === 'return') {
       e.state = 'chase';
       e.targetPid = attackerPid;
@@ -204,6 +270,7 @@ export class EnemySim {
     const e = this.enemies.get(id);
     if (!e || e.state === 'dead' || e.state === 'surrender') return;
     e.stunT = Math.max(e.stunT, dur);
+    e.windupT = 0; e.windupPid = -1; // Fase 41: parry/atordoamento CANCELA o golpe telegrafado (riposte Fable)
     this.events.push({ t: 'estun', id: e.id });
   }
 
@@ -259,8 +326,12 @@ export class EnemySim {
   update(dt: number, players: SimPlayerView[], nightF: number) {
     this.lastPlayers = players;
     if (this.slowT > 0) this.slowT -= dt;
-    const eDt = dt * (this.slowT > 0 ? 0.35 : 1);
+    const worldDt = dt * (this.slowT > 0 ? 0.35 : 1); // slow global (Tempo Lento)
+    let eDt = worldDt;
     const toRemove: number[] = [];
+    // Fase 42: conta quantos já estão atacando cada herói (tokens de ataque — revezar, não empilhar)
+    this.windCount.clear();
+    for (const e of this.enemies.values()) if (e.windupT > 0 && e.windupPid >= 0) this.windCount.set(e.windupPid, (this.windCount.get(e.windupPid) ?? 0) + 1);
 
     for (const e of this.enemies.values()) {
       const def = ENEMY_DEFS[e.type];
@@ -272,9 +343,13 @@ export class EnemySim {
           e.hp = e.maxHp;
           e.x = e.homeX; e.z = e.homeZ;
           e.knockX = e.knockZ = 0;
+          e.chillT = e.frozenT = e.shockT = e.fearT = e.windupT = e.phase = 0;
         }
         continue;
       }
+      // Fase 25 (escola Gelo): congelamento desacelera ESTE inimigo (movimento e ataque em câmera lenta)
+      if (e.chillT > 0) e.chillT -= dt;
+      eDt = worldDt * (e.chillT > 0 ? 0.5 : 1);
       // queimadura: dano residual por segundo, creditado a quem lançou
       if (e.burnT > 0) {
         e.burnT -= dt;
@@ -302,21 +377,52 @@ export class EnemySim {
         e.stunT -= dt;
         continue; // atordoado — parado no lugar
       }
+      if (e.frozenT > 0) { // Fase 28: CONGELADO (Gelo carregado) — parado total, não age (executável)
+        e.frozenT -= dt;
+        continue;
+      }
+      if (e.shockT > 0) { // Fase 28: CHOQUE (Raio) — interrompido brevemente, não age
+        e.shockT -= dt;
+        continue;
+      }
       if (e.hitstunT > 0) {
         e.hitstunT -= dt;
         continue; // cambaleio breve ao levar golpe (Fase 14) — dá pra "ler" o impacto
       }
-      if (e.state === 'flee') {
+      // Fase 28: MEDO (Empurrão forte) — foge do herói enquanto durar (mesma locomoção do flee)
+      if (e.fearT > 0 || e.state === 'flee') {
+        if (e.fearT > 0) e.fearT -= dt;
         const near = this.nearest(players, e.x, e.z);
-        if (!near) { toRemove.push(e.id); continue; }
+        if (!near) { if (e.state === 'flee') toRemove.push(e.id); continue; }
         const dx = e.x - near.x, dz = e.z - near.z;
         const d = Math.hypot(dx, dz) || 1;
-        if (d > 80) { toRemove.push(e.id); continue; }
+        if (e.state === 'flee' && d > 80) { toRemove.push(e.id); continue; }
         e.x += (dx / d) * 7 * dt;
         e.z += (dz / d) * 7 * dt;
         e.ry = Math.atan2(dx, dz);
         e.walkT += dt * 12;
         continue;
+      }
+      // Fase 41: resolve o golpe TELEGRAFADO ao fim do windup — se o alvo saiu do alcance, ERRA (esquivou andando)
+      if (e.windupT > 0) {
+        e.windupT -= dt;
+        const near = this.nearest(players, e.x, e.z);
+        if (near) e.ry = Math.atan2(near.x - e.x, near.z - e.z); // encara enquanto rearma (telegrafa)
+        if (e.windupT <= 0) {
+          if (e.windupPid === -2) { // Fase 43: SLAM de ÁREA (troll/malachi) — pega quem NÃO saiu do raio (dá pra fugir)
+            for (const p of players) {
+              if (p.dead || Math.hypot(p.x - e.x, p.z - e.z) >= 5.5) continue;
+              this.events.push({ t: 'eatk', id: e.id, pid: p.id, dmg: Math.round((def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0])) * 1.2) });
+            }
+          } else {
+            const tgt = players.find((p) => p.id === e.windupPid && !p.dead);
+            if (tgt && Math.hypot(tgt.x - e.x, tgt.z - e.z) <= def.atkR + 0.6) {
+              this.events.push({ t: 'eatk', id: e.id, pid: tgt.id, dmg: Math.round(def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0])) });
+            }
+          }
+          e.windupPid = -1;
+        }
+        continue; // COMPROMETIDO durante o windup — não persegue nem re-ataca
       }
 
       const dHome = Math.hypot(e.homeX - e.x, e.homeZ - e.z);
@@ -430,16 +536,22 @@ export class EnemySim {
         } else {
           e.state = 'attack';
           e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z);
-          // troll: pancada de área periódica (reusa o cooldown do salto)
-          if (def.slam && e.leapCd <= 0) {
-            e.leapCd = 9;
-            this.events.push({ t: 'eslam', id: e.id, x: e.x, z: e.z });
-            for (const p of players) {
-              if (p.dead || Math.hypot(p.x - e.x, p.z - e.z) >= 5.5) continue;
-              this.events.push({ t: 'eatk', id: e.id, pid: p.id, dmg: Math.round((def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0])) * 1.2) });
-            }
+          // troll/malachi: pancada de ÁREA periódica — Fase 43: TELEGRAFA (windup) → dá pra fugir do raio
+          if (def.slam && e.leapCd <= 0 && e.windupT <= 0) {
+            e.leapCd = 9 - e.phase * 2; // Fase 44: slam mais frequente na fúria
+            e.windupT = ((def.windup ?? WINDUP_TIME) + 0.25) * (1 - e.phase * 0.18); // telegrafa menos na fúria
+            e.windupPid = -2; // sentinela: golpe de ÁREA (resolvido no gate do windup)
+            this.events.push({ t: 'eslam', id: e.id, x: e.x, z: e.z }); // tell: ergue os braços + aviso no chão
           } else {
             this.tryAttack(e, def, tgt, eDt);
+            if (e.windupT <= 0) { // Fase 42: não é a vez dele → CIRCULA + SE SEPARA ao redor do herói (cerca)
+              const d = dPlayer || 1;
+              const dir = e.id % 2 ? 1 : -1; // metade pra cada lado → cercam
+              const [sx, sz] = this.sepVec(e);
+              e.x += ((-(tgt.z - e.z) / d) * dir + sx * 1.2) * def.speed * 0.5 * eDt;
+              e.z += (((tgt.x - e.x) / d) * dir + sz * 1.2) * def.speed * 0.5 * eDt;
+              e.walkT += eDt * def.speed;
+            }
           }
         }
       } else if (e.state === 'return') {
@@ -450,14 +562,23 @@ export class EnemySim {
     }
 
     for (const id of toRemove) this.enemies.delete(id);
+    for (const id of toRemove) this.hist.delete(id);
+    this.recordHist(dt); // Fase 35: registra as posições deste tick p/ lag comp
   }
 
-  private tryAttack(e: SimEnemy, def: { atkCd: number; dmg: [number, number] }, tgt: SimPlayerView, eDt: number) {
+  private tryAttack(e: SimEnemy, def: { atkCd: number; dmg: [number, number]; windup?: number }, tgt: SimPlayerView, eDt: number) {
     e.attackTimer -= eDt;
     if (e.attackTimer <= 0) {
-      e.attackTimer = def.atkCd;
-      const dmg = Math.round(def.dmg[0] + Math.random() * (def.dmg[1] - def.dmg[0]));
-      this.events.push({ t: 'eatk', id: e.id, pid: tgt.id, dmg });
+      // Fase 42: revezar — se já há MAX_ATTACKERS batendo neste herói, espera a vez (cerca/circula, não empilha)
+      if ((this.windCount.get(tgt.id) ?? 0) >= MAX_ATTACKERS) return;
+      const phaseMul = 1 - e.phase * 0.18; // Fase 44: chefe em fúria ataca mais rápido/telegrafa menos (fase 2 → ×0.64)
+      e.attackTimer = def.atkCd * phaseMul;
+      // Fase 41/43: TELEGRAFA — windup POR TIPO (troll lento/telegráfico, lobo rápido); esquiva/parry aqui
+      const wu = (def.windup ?? WINDUP_TIME) * phaseMul;
+      e.windupT = wu;
+      e.windupPid = tgt.id;
+      this.windCount.set(tgt.id, (this.windCount.get(tgt.id) ?? 0) + 1); // ocupa um token
+      this.events.push({ t: 'ewind', id: e.id, pid: tgt.id, dur: wu });
     }
   }
 
@@ -484,13 +605,26 @@ export class EnemySim {
     return best;
   }
 
+  // Fase 42: vetor de SEPARAÇÃO — soma dos empurrões pra longe de aliados colados (cerca/flanqueia, não empilha)
+  private sepVec(e: SimEnemy): [number, number] {
+    const R = 3.0; let sx = 0, sz = 0;
+    for (const o of this.enemies.values()) {
+      if (o === e || o.state === 'dead') continue;
+      const ox = e.x - o.x, oz = e.z - o.z, od = Math.hypot(ox, oz);
+      if (od > 0.01 && od < R) { const f = (R - od) / R; sx += (ox / od) * f; sz += (oz / od) * f; }
+    }
+    return [sx, sz];
+  }
   private moveToward(e: SimEnemy, tx: number, tz: number, speed: number, dt: number) {
     const dx = tx - e.x, dz = tz - e.z;
     const d = Math.hypot(dx, dz);
-    if (d < 0.3) return;
-    e.x += (dx / d) * speed * dt;
-    e.z += (dz / d) * speed * dt;
-    e.ry = Math.atan2(dx, dz);
+    const [sx, sz] = this.sepVec(e);
+    let mx = (d > 0.01 ? dx / d : 0) + sx * 1.5, mz = (d > 0.01 ? dz / d : 0) + sz * 1.5;
+    const ml = Math.hypot(mx, mz);
+    if (ml < 0.01) return;
+    e.x += (mx / ml) * speed * dt;
+    e.z += (mz / ml) * speed * dt;
+    if (d > 0.01) e.ry = Math.atan2(dx, dz); // encara o alvo (não a direção de separação)
     e.walkT += dt * speed * 2.2;
   }
 
